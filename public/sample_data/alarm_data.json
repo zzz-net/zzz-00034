@@ -1,0 +1,86 @@
+[
+  {
+    "device_id": "DEV-001",
+    "timestamp": "2024-01-15 08:45:00",
+    "alarm_type": "温度过高",
+    "level": "warning",
+    "description": "设备温度超过阈值，当前温度 45.8°C"
+  },
+  {
+    "device_id": "DEV-001",
+    "timestamp": "2024-01-15 08:55:00",
+    "alarm_type": "温度过高",
+    "level": "critical",
+    "description": "设备温度严重超标，当前温度 55.3°C"
+  },
+  {
+    "device_id": "DEV-001",
+    "timestamp": "2024-01-15 09:05:00",
+    "alarm_type": "温度过高",
+    "level": "critical",
+    "description": "设备温度持续过高，当前温度 62.1°C"
+  },
+  {
+    "device_id": "DEV-002",
+    "timestamp": "2024-01-15 08:25:00",
+    "alarm_type": "电压过低",
+    "level": "warning",
+    "description": "设备电压低于阈值，当前电压 195.2V"
+  },
+  {
+    "device_id": "DEV-002",
+    "timestamp": "2024-01-15 08:45:00",
+    "alarm_type": "电压过低",
+    "level": "critical",
+    "description": "设备电压严重偏低，当前电压 170.3V"
+  },
+  {
+    "device_id": "DEV-002",
+    "timestamp": "2024-01-15 09:30:00",
+    "alarm_type": "设备离线",
+    "level": "critical",
+    "description": "设备失去连接，状态异常"
+  },
+  {
+    "device_id": "DEV-002",
+    "timestamp": "2024-01-15 10:30:00",
+    "alarm_type": "设备恢复",
+    "level": "info",
+    "description": "设备重新上线，运行恢复正常"
+  },
+  {
+    "device_id": "DEV-004",
+    "timestamp": "2024-01-15 09:30:00",
+    "alarm_type": "温度过高",
+    "level": "warning",
+    "description": "设备温度偏高，当前温度 45.2°C"
+  },
+  {
+    "device_id": "DEV-004",
+    "timestamp": "2024-01-15 10:30:00",
+    "alarm_type": "温度过高",
+    "level": "critical",
+    "description": "设备温度严重超标，当前温度 58.4°C"
+  },
+  {
+    "device_id": "DEV-004",
+    "timestamp": "2024-01-15 11:30:00",
+    "alarm_type": "温度过高",
+    "level": "critical",
+    "description": "设备温度持续过高，当前温度 68.9°C，建议立即处理"
+  },
+  {
+    "device_id": "DEV-004",
+    "timestamp": "2024-01-15 12:15:00",
+    "alarm_type": "温度过高",
+    "level": "critical",
+    "description": "设备温度达到最高值 72.3°C，请立即采取措施"
+  },
+  {
+    "device_id": "DEV-004",
+    "timestamp": "2024-01-15 13:00:00",
+    "alarm_type": "温度下降",
+    "level": "info",
+    "description": "设备温度开始下降，当前 65.7°C"
+  }
+]

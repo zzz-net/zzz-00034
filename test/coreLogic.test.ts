@@ -69,12 +69,31 @@ async function runTests() {
   const allEvidences = [...sensorEvidences, ...noteEvidences, ...alarmEvidences]
   const mergeResult = mergeEvents(allEvidences, DEFAULT_THRESHOLD.merge_window_minutes)
   console.log(`  归并为 ${mergeResult.events.length} 个事件`)
-  assert(mergeResult.events.length > 0, '成功归并事件')
-  assert(mergeResult.evidences.length === allEvidences.length, '所有证据都被归并')
-  
+  assert(mergeResult.events.length === 4, `事件总数正确 (${mergeResult.events.length}/4)`)
+
+  const devicesWithEvents = [...new Set(mergeResult.events.map(e => e.device_id))].sort()
+  assert(JSON.stringify(devicesWithEvents) === JSON.stringify(['DEV-001', 'DEV-002', 'DEV-004']),
+    `只有异常设备生成事件: [${devicesWithEvents.join(',')}]`)
+
+  const dev001Events = mergeResult.events.filter(e => e.device_id === 'DEV-001')
+  const dev002Events = mergeResult.events.filter(e => e.device_id === 'DEV-002')
+  const dev004Events = mergeResult.events.filter(e => e.device_id === 'DEV-004')
+  assert(dev001Events.length === 1, 'DEV-001 生成 1 个事件')
+  assert(dev002Events.length === 1, 'DEV-002 生成 1 个事件')
+  assert(dev004Events.length === 2, 'DEV-004 生成 2 个事件（时间跨度超出合并窗口）')
+
+  const dev001Evidences = mergeResult.evidences.filter(e => e.event_id === dev001Events[0].id)
+  assert(dev001Evidences.length === 6, `DEV-001 事件证据数正确 (${dev001Evidences.length}/6)`)
+  assert(dev001Evidences.some(e => e.type === 'sensor_anomaly'), 'DEV-001 含传感器异常证据')
+  assert(dev001Evidences.some(e => e.type === 'alarm'), 'DEV-001 含告警证据')
+  assert(dev001Evidences.some(e => e.type === 'manual_note'), 'DEV-001 含备注证据')
+
+  const dev002Evidences = mergeResult.evidences.filter(e => e.event_id === dev002Events[0].id)
+  assert(dev002Evidences.length === 20, `DEV-002 事件证据数正确 (${dev002Evidences.length}/20)`)
+
   for (const event of mergeResult.events) {
     const eventEvidences = mergeResult.evidences.filter(e => e.event_id === event.id)
-    assert(eventEvidences.length === event.evidence_count, `事件 ${event.device_id} 的证据计数正确`)
+    assert(eventEvidences.length === event.evidence_count, `事件 ${event.device_id} 的证据计数与 event.evidence_count 匹配`)
   }
 
   console.log('\n6. 测试事件状态')

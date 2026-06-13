@@ -8,37 +8,98 @@ import { ImportModal } from '../components/import/ImportModal'
 import { ScenePackageImportModal } from '../components/import/ScenePackageImportModal'
 import { ImportHistoryPanel } from '../components/import/ImportHistoryPanel'
 import { ScenePackageReplayModal } from '../components/import/ScenePackageReplayModal'
+import { UndoConfirmModal } from '../components/import/UndoConfirmModal'
 import { ExportPanel } from '../components/export/ExportPanel'
 import { ToastContainer } from '../components/common/Toast'
 import { useAppStore } from '../store/useAppStore'
 
 export default function Dashboard() {
-  const { events, sensorRecords, manualNotes, alarmRecords, clearAllData, getDeviceIds, importBatches } = useAppStore()
+  const {
+    events,
+    sensorRecords,
+    manualNotes,
+    alarmRecords,
+    clearAllData,
+    getDeviceIds,
+    importBatches,
+    importSessions,
+    undoSession,
+    getLatestUndoableSession,
+    addToast,
+  } = useAppStore()
   const [importOpen, setImportOpen] = useState(false)
   const [sceneImportOpen, setSceneImportOpen] = useState(false)
   const [historyOpen, setHistoryOpen] = useState(false)
   const [replayOpen, setReplayOpen] = useState(false)
   const [importMenuOpen, setImportMenuOpen] = useState(false)
-  
+  const [undoModalOpen, setUndoModalOpen] = useState(false)
+  const [undoTargetSessionId, setUndoTargetSessionId] = useState<string | undefined>(undefined)
+
   const pendingCount = events.filter(e => e.status === 'pending').length
   const confirmedCount = events.filter(e => e.status === 'confirmed').length
   const falseAlarmCount = events.filter(e => e.status === 'false_alarm').length
   const closedCount = events.filter(e => e.status === 'closed').length
   const deviceCount = getDeviceIds().length
-  
+
   const handleClear = () => {
     if (window.confirm('确定要清除所有数据吗？此操作不可撤销。')) {
       clearAllData()
     }
   }
-  
+
+  const handleRequestUndo = (sessionId: string) => {
+    setUndoTargetSessionId(sessionId)
+    setUndoModalOpen(true)
+  }
+
+  const handleConfirmUndo = () => {
+    if (!undoTargetSessionId) return
+    const result = undoSession(undoTargetSessionId)
+    setUndoModalOpen(false)
+    setUndoTargetSessionId(undefined)
+    if (result.success) {
+      addToast(
+        'success',
+        `撤销成功：已恢复 ${result.restored_event_count || 0} 个事件、${result.restored_batch_count || 0} 个批次`
+      )
+    } else {
+      addToast('error', `撤销失败：${result.reason || '未知错误'}`)
+    }
+  }
+
+  const handleUndoLastSession = () => {
+    const latest = getLatestUndoableSession()
+    if (latest) {
+      handleRequestUndo(latest.id)
+    } else {
+      addToast('error', '当前没有可撤销的导入会话')
+    }
+  }
+
   return (
     <div className="min-h-screen bg-slate-50">
       <ToastContainer />
       <ImportModal isOpen={importOpen} onClose={() => setImportOpen(false)} />
-      <ScenePackageImportModal isOpen={sceneImportOpen} onClose={() => setSceneImportOpen(false)} />
-      <ImportHistoryPanel isOpen={historyOpen} onClose={() => setHistoryOpen(false)} />
+      <ScenePackageImportModal
+        isOpen={sceneImportOpen}
+        onClose={() => setSceneImportOpen(false)}
+        onUndoLastSession={handleUndoLastSession}
+      />
+      <ImportHistoryPanel
+        isOpen={historyOpen}
+        onClose={() => setHistoryOpen(false)}
+        onRequestUndo={handleRequestUndo}
+      />
       <ScenePackageReplayModal isOpen={replayOpen} onClose={() => setReplayOpen(false)} />
+      <UndoConfirmModal
+        open={undoModalOpen}
+        sessionId={undoTargetSessionId}
+        onClose={() => {
+          setUndoModalOpen(false)
+          setUndoTargetSessionId(undefined)
+        }}
+        onConfirm={handleConfirmUndo}
+      />
       
       <header className="bg-white border-b border-slate-200 sticky top-0 z-30">
         <div className="max-w-screen-2xl mx-auto px-6 py-4">
@@ -69,9 +130,9 @@ export default function Dashboard() {
               >
                 <History className="w-4 h-4" />
                 导入历史
-                {importBatches.length > 0 && (
+                {importSessions.length > 0 && (
                   <span className="ml-0.5 px-1.5 py-0.5 text-[10px] font-medium bg-sky-100 text-sky-700 rounded-full">
-                    {importBatches.length}
+                    {importSessions.length}
                   </span>
                 )}
               </button>

@@ -12,15 +12,17 @@ import {
   ArrowRight,
   Trash2,
   Package,
+  RotateCcw,
 } from 'lucide-react'
 import { Modal } from '../common/Modal'
 import { useAppStore } from '../../store/useAppStore'
 import { generateScenePackagePreview } from '../../utils/scenePackage'
-import { ScenePackagePreview, FileType } from '../../types'
+import { ScenePackagePreview, FileType, ImportSession } from '../../types'
 
 interface ScenePackageImportModalProps {
   isOpen: boolean
   onClose: () => void
+  onUndoLastSession?: () => void
 }
 
 interface SelectedFile {
@@ -50,7 +52,7 @@ const typeLabels: Record<FileType, { label: string; icon: typeof FileText; accep
   },
 }
 
-export function ScenePackageImportModal({ isOpen, onClose }: ScenePackageImportModalProps) {
+export function ScenePackageImportModal({ isOpen, onClose, onUndoLastSession }: ScenePackageImportModalProps) {
   const [step, setStep] = useState<'select' | 'preview' | 'done'>('select')
   const [selectedFiles, setSelectedFiles] = useState<Partial<Record<FileType, SelectedFile>>>({})
   const [preview, setPreview] = useState<ScenePackagePreview | null>(null)
@@ -62,6 +64,8 @@ export function ScenePackageImportModal({ isOpen, onClose }: ScenePackageImportM
     conflictCount: number
     affectedEventCount: number
     resolutionSummary: string
+    sessionId: string
+    session: ImportSession
   } | null>(null)
   const sensorInputRef = useRef<HTMLInputElement>(null)
   const noteInputRef = useRef<HTMLInputElement>(null)
@@ -129,6 +133,8 @@ export function ScenePackageImportModal({ isOpen, onClose }: ScenePackageImportM
         conflictCount: result.conflicts.length,
         affectedEventCount: result.affectedEventIds.length,
         resolutionSummary: result.resolutionSummary,
+        sessionId: result.sessionId,
+        session: result.session,
       })
       setStep('done')
     } catch (e) {
@@ -340,8 +346,42 @@ export function ScenePackageImportModal({ isOpen, onClose }: ScenePackageImportM
             <p className="text-sm text-slate-500 mb-4">
               {applyResult.totalRecords} 条记录 · {applyResult.newEvents} 个新事件 · {applyResult.batches} 个批次
             </p>
+
+            <div className="bg-sky-50 border border-sky-200 rounded-lg p-4 mb-4 text-left max-w-md mx-auto">
+              <div className="flex items-center gap-2 mb-3">
+                <CheckCircle className="w-4 h-4 text-sky-600" />
+                <span className="text-sm font-medium text-sky-700">
+                  导入会话：{applyResult.session.id.slice(0, 8)} · {new Date(applyResult.session.created_at).toLocaleString('zh-CN')}
+                </span>
+              </div>
+              <div className="grid grid-cols-4 gap-2 text-center text-xs">
+                <div className="bg-white rounded-lg p-2">
+                  <p className="text-lg font-bold text-emerald-600">{applyResult.session.breakdown.new_events}</p>
+                  <p className="text-slate-500 mt-0.5">新增</p>
+                </div>
+                <div className="bg-white rounded-lg p-2">
+                  <p className="text-lg font-bold text-sky-600">{applyResult.session.breakdown.merged_events}</p>
+                  <p className="text-slate-500 mt-0.5">合并</p>
+                </div>
+                <div className="bg-white rounded-lg p-2">
+                  <p className="text-lg font-bold text-amber-600">{applyResult.session.breakdown.overwritten_events}</p>
+                  <p className="text-slate-500 mt-0.5">覆盖</p>
+                </div>
+                <div className="bg-white rounded-lg p-2">
+                  <p className="text-lg font-bold text-slate-500">{applyResult.session.breakdown.skipped_events}</p>
+                  <p className="text-slate-500 mt-0.5">跳过</p>
+                </div>
+              </div>
+              {applyResult.session.threshold_changed && (
+                <div className="flex items-center gap-1.5 mt-3 pt-3 border-t border-sky-200">
+                  <AlertCircle className="w-3.5 h-3.5 text-amber-500" />
+                  <span className="text-xs font-medium text-amber-700">阈值配置已更新</span>
+                </div>
+              )}
+            </div>
+
             {applyResult.conflictCount > 0 && (
-              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-3 text-xs text-left max-w-md mx-auto">
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-4 text-xs text-left max-w-md mx-auto">
                 <div className="flex items-center gap-2 mb-1">
                   <AlertTriangle className="w-4 h-4 text-amber-500" />
                   <span className="font-medium text-amber-700">冲突处理结果</span>
@@ -352,6 +392,20 @@ export function ScenePackageImportModal({ isOpen, onClose }: ScenePackageImportM
                 )}
               </div>
             )}
+
+            {onUndoLastSession && (
+              <button
+                onClick={() => {
+                  onUndoLastSession()
+                  handleClose()
+                }}
+                className="inline-flex items-center gap-2 px-4 py-2 mb-4 bg-amber-50 text-amber-700 border border-amber-200 text-sm font-medium rounded-lg hover:bg-amber-100 transition-colors"
+              >
+                <RotateCcw className="w-4 h-4" />
+                撤销本次导入
+              </button>
+            )}
+
             <p className="text-xs text-slate-400">
               导入记录已保存在本地，刷新或重开页面后可在导入历史中查看冲突处理结果
             </p>

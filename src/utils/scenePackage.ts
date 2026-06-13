@@ -14,6 +14,11 @@ import {
   FilePreview,
   FileType,
   ReplayMode,
+  ImportSession,
+  UndoSnapshot,
+  ReplayConflictAnalysis,
+  ConflictChoice,
+  ConflictChoiceType,
 } from '../types'
 import { generateId, parseSensorCSV, parseNoteCSV, parseCSV } from './csvParser'
 import { parseAlarmJSON } from './jsonParser'
@@ -277,8 +282,13 @@ export function exportScenePackage(
   alarmRecords: AlarmRecord[],
   importBatches: ImportBatch[],
   events: Event[],
-  evidences: Evidence[]
+  evidences: Evidence[],
+  importSessions: ImportSession[] = [],
+  undoSnapshots: UndoSnapshot[] = [],
+  exportedBySessionId?: string
 ): ScenePackage {
+  const activeSessions = importSessions.filter(s => s.undo_status === 'active').length
+  const undoneSessions = importSessions.filter(s => s.undo_status === 'undone').length
   return {
     version: 1,
     exported_at: new Date().toISOString(),
@@ -289,6 +299,22 @@ export function exportScenePackage(
     import_batches: importBatches.map(b => ({ ...b })),
     events: events.map(e => ({ ...e })),
     evidences: evidences.map(e => ({ ...e })),
+    import_sessions: importSessions.map(s => ({ ...s })),
+    undo_snapshots: undoSnapshots.map(s => ({
+      ...s,
+      full_sensor_records: [],
+      full_manual_notes: [],
+      full_alarm_records: [],
+      full_events: [],
+      full_evidences: [],
+      full_import_batches: [],
+      full_sessions: [],
+    })),
+    _meta: {
+      exported_by_session_id: exportedBySessionId,
+      total_active_sessions: activeSessions,
+      total_undone_sessions: undoneSessions,
+    },
   }
 }
 
@@ -372,13 +398,24 @@ export function parseScenePackage(content: string): ParseScenePackageResult {
     }
   }
 
+  if (!Array.isArray(obj.import_sessions)) {
+    obj.import_sessions = []
+  }
+  if (!Array.isArray(obj.undo_snapshots)) {
+    obj.undo_snapshots = []
+  }
+
   if (errors.length > 0) {
     return { valid: false, data: null, errors }
   }
 
+  const data = raw as ScenePackage
+  if (!data.import_sessions) data.import_sessions = []
+  if (!data.undo_snapshots) data.undo_snapshots = []
+
   return {
     valid: true,
-    data: raw as ScenePackage,
+    data,
     errors: [],
   }
 }
@@ -531,5 +568,184 @@ export function replayScenePackage(
     events,
     evidences,
     threshold: validateThresholdConfig(pkg.threshold).valid ? pkg.threshold : { ...DEFAULT_THRESHOLD },
+  }
+}
+
+export function analyzeReplayConflicts(
+  pkg: ScenePackage,
+  currentSensorRecords: SensorRecord[],
+  currentManualNotes: ManualNote[],
+  currentAlarmRecords: AlarmRecord[],
+  currentBatches: ImportBatch[],
+  currentThreshold: ThresholdConfig,
+  existingSessions: ImportSession[]
+): ReplayConflictAnalysis {
+  const sameDeviceTimeConflicts: ConflictDetail[] = []
+  const batchDuplicates: ConflictDetail[] = []
+  const undoneSessions: Array<{ session_id: string; conflict_description: string }> = []
+  const choicesNeeded: ConflictChoice[] = []
+
+  const timeConflictToleranceMs = 1000
+
+  for (const nr of pkg.sensor_records) {
+    for (const er of currentSensorRecords) {
+      if (er.device_id === nr.device_id) {
+        const diff = Math.abs(new Date(er.timestamp).getTime() - new Date(nr.timestamp).getTime())
+        if (diff <= timeConflictToleranceMs) {
+          sameDeviceTimeConflicts.push({
+            device_id: er.device_id,
+            timestamp: er.timestamp,
+            existing_source: er.source_file,
+            new_source: nr.source_file,
+            conflict_type: 'same_device_time',
+            description: `设备 ${er.device_id} 在 ${er.timestamp.slice(0, 19)} 已有传感器记录（时间差 ${diff}ms）`,
+            existing_session_id: er.session_id,
+            new_session_id: nr.session_id,
+          })
+          break
+        }
+      }
+    }
+  }
+
+  for (const nn of pkg.manual_notes) {
+    for (const en of currentManualNotes) {
+      if (en.device_id === nn.device_id) {
+        const diff = Math.abs(new Date(en.timestamp).getTime() - new Date(nn.timestamp).getTime())
+        if (diff <= timeConflictToleranceMs) {
+          sameDeviceTimeConflicts.push({
+            device_id: en.device_id,
+            timestamp: en.timestamp,
+            existing_source: en.source_file,
+            new_source: nn.source_file,
+            conflict_type: 'same_device_time',
+            description: `设备 ${en.device_id} 在 ${en.timestamp.slice(0, 19)} 已有备注记录（时间差 ${diff}ms）`,
+            existing_session_id: en.session_id,
+            new_session_id: nn.session_id,
+          })
+          break
+        }
+      }
+    }
+  }
+
+  for (const na of pkg.alarm_records) {
+    for (const ea of currentAlarmRecords) {
+      if (ea.device_id === na.device_id) {
+        const diff = Math.abs(new Date(ea.timestamp).getTime() - new Date(na.timestamp).getTime())
+        if (diff <= timeConflictToleranceMs) {
+          sameDeviceTimeConflicts.push({
+            device_id: ea.device_id,
+            timestamp: ea.timestamp,
+            existing_source: ea.source_file,
+            new_source: na.source_file,
+            conflict_type: 'same_device_time',
+            description: `设备 ${ea.device_id} 在 ${ea.timestamp.slice(0, 19)} 已有告警记录（时间差 ${diff}ms）`,
+            existing_session_id: ea.session_id,
+            new_session_id: na.session_id,
+          })
+          break
+        }
+      }
+    }
+  }
+
+  const existingBatchHashes = new Set(currentBatches.map(b => b.file_hash))
+  for (const batch of pkg.import_batches) {
+    if (existingBatchHashes.has(batch.file_hash)) {
+      batchDuplicates.push({
+        device_id: '',
+        timestamp: '',
+        existing_source: '本地已导入批次',
+        new_source: batch.file_name,
+        conflict_type: 'batch_duplicate',
+        description: `批次 ${batch.file_name} (${batch.record_count} 条记录) 已在本地存在`,
+        existing_session_id: currentBatches.find(b => b.file_hash === batch.file_hash)?.session_id,
+        new_session_id: batch.session_id,
+      })
+    }
+  }
+
+  if (pkg.import_sessions) {
+    for (const pkgSession of pkg.import_sessions) {
+      if (pkgSession.undo_status === 'undone') {
+        const existsLocal = existingSessions.some(s => s.package_id === pkgSession.package_id && s.undo_status === 'undone')
+        undoneSessions.push({
+          session_id: pkgSession.id,
+          conflict_description: existsLocal
+            ? `会话 ${pkgSession.id.slice(0, 10)}... 在本地和场景包中都已标记撤销`
+            : `会话 ${pkgSession.id.slice(0, 10)}... 在场景包中已撤销，本地未标记`,
+        })
+      }
+    }
+  }
+
+  const thresholdFields: Array<keyof ThresholdConfig> = [
+    'temp_min', 'temp_max', 'voltage_min', 'voltage_max',
+    'offline_duration_min', 'merge_window_minutes',
+  ]
+  const thresholdDiff: ReplayConflictAnalysis['threshold_diff'] = (() => {
+    const differences: Array<{ field: string; current: number | string; imported: number | string }> = []
+    for (const f of thresholdFields) {
+      const cv = currentThreshold[f]
+      const iv = pkg.threshold[f]
+      if (cv !== iv) {
+        differences.push({ field: f, current: cv, imported: iv })
+      }
+    }
+    if (differences.length === 0) return null
+    return {
+      current: { ...currentThreshold },
+      imported: { ...pkg.threshold },
+      differences,
+    }
+  })()
+
+  for (const c of sameDeviceTimeConflicts.slice(0, 10)) {
+    const key = `${c.conflict_type}:${c.device_id}:${c.timestamp}`
+    choicesNeeded.push({
+      conflict_type: 'same_device_time',
+      key,
+      device_id: c.device_id,
+      timestamp: c.timestamp,
+      existing_source: c.existing_source,
+      new_source: c.new_source,
+      choice: 'keep_both',
+      description: c.description,
+    })
+  }
+
+  for (const b of batchDuplicates.slice(0, 10)) {
+    const key = `${b.conflict_type}:${b.new_source}`
+    choicesNeeded.push({
+      conflict_type: 'batch_duplicate',
+      key,
+      existing_source: b.existing_source,
+      new_source: b.new_source,
+      choice: 'skip',
+      description: b.description,
+    })
+  }
+
+  if (thresholdDiff) {
+    for (const d of thresholdDiff.differences) {
+      choicesNeeded.push({
+        conflict_type: 'threshold_diff',
+        key: `threshold:${d.field}`,
+        existing_source: `当前: ${d.current}`,
+        new_source: `导入: ${d.imported}`,
+        choice: 'merge',
+        description: `阈值字段 ${d.field} 不一致（当前: ${d.current}，导入: ${d.imported}）`,
+      })
+    }
+  }
+
+  return {
+    same_device_time_conflicts: sameDeviceTimeConflicts,
+    batch_duplicates: batchDuplicates,
+    undone_sessions: undoneSessions,
+    threshold_diff: thresholdDiff,
+    total_conflicts: sameDeviceTimeConflicts.length + batchDuplicates.length + undoneSessions.length + (thresholdDiff ? thresholdDiff.differences.length : 0),
+    choices_needed: choicesNeeded,
   }
 }

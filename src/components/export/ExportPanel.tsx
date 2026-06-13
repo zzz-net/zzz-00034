@@ -9,7 +9,7 @@ interface ExportPanelProps {
 }
 
 export function ExportPanel({ onExported }: ExportPanelProps) {
-  const { events, evidences, addToast, threshold, sensorRecords, manualNotes, alarmRecords, importBatches } = useAppStore()
+  const { events, evidences, addToast, threshold, sensorRecords, manualNotes, alarmRecords, importBatches, importSessions, undoSnapshots } = useAppStore()
   const [isOpen, setIsOpen] = useState(false)
   const [format, setFormat] = useState<'csv' | 'json' | 'scene'>('csv')
   const [scope, setScope] = useState<'events' | 'evidences' | 'all'>('all')
@@ -25,7 +25,9 @@ export function ExportPanel({ onExported }: ExportPanelProps) {
         alarmRecords,
         importBatches,
         events,
-        evidences
+        evidences,
+        importSessions,
+        undoSnapshots
       )
       const json = JSON.stringify(pkg, null, 2)
       downloadFile(json, `scene_package_${timestamp}.json`, 'application/json')
@@ -143,13 +145,14 @@ export function ExportPanel({ onExported }: ExportPanelProps) {
                     <li>所有导入批次记录</li>
                     <li>全部原始数据记录</li>
                     <li>事件状态、处理人、备注</li>
+                    <li>导入会话与撤销快照</li>
                   </ul>
                 </div>
               )}
               
               <div className="text-xs text-slate-400">
                 {format === 'scene' ? (
-                  <>共 {importBatches.length} 批次，{events.length} 个事件，{evidences.length} 条证据</>
+                  <>共 {importBatches.length} 批次，{importSessions.length} 会话，{events.length} 个事件，{evidences.length} 条证据</>
                 ) : (
                   <>共 {events.length} 个事件，{evidences.length} 条证据</>
                 )}

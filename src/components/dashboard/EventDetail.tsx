@@ -9,11 +9,30 @@ import {
   AlertTriangle,
   Archive,
   FileText,
+  Link2,
+  Layers,
+  Activity,
+  Database,
+  FileSpreadsheet,
+  Bell,
 } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { StatusBadge } from '../common/StatusBadge'
 import { EventTimeline } from './EventTimeline'
-import { EventStatus } from '../../types'
+import { EventStatus, FileType } from '../../types'
+
+const actionTypeBadge: Record<string, { label: string; color: string }> = {
+  import: { label: '导入', color: 'bg-sky-100 text-sky-700' },
+  replay: { label: '回放', color: 'bg-violet-100 text-violet-700' },
+  undo: { label: '撤销', color: 'bg-amber-100 text-amber-700' },
+  threshold_change: { label: '阈值', color: 'bg-emerald-100 text-emerald-700' },
+}
+
+const fileTypeBadge: Record<FileType, { label: string; badgeColor: string; iconBg: string; iconColor: string; icon: typeof Database }> = {
+  sensor: { label: '传感器', badgeColor: 'bg-sky-100 text-sky-700', iconBg: 'bg-sky-50', iconColor: 'text-sky-600', icon: Database },
+  note: { label: '备注', badgeColor: 'bg-indigo-100 text-indigo-700', iconBg: 'bg-indigo-50', iconColor: 'text-indigo-600', icon: FileSpreadsheet },
+  alarm: { label: '告警', badgeColor: 'bg-amber-100 text-amber-700', iconBg: 'bg-amber-50', iconColor: 'text-amber-600', icon: Bell },
+}
 
 export function EventDetail() {
   const {
@@ -24,6 +43,8 @@ export function EventDetail() {
     updateEventRemark,
     closeEvent,
     getEventEvidences,
+    importSessions,
+    importBatches,
   } = useAppStore()
   
   const [handler, setHandler] = useState('')
@@ -88,6 +109,18 @@ export function EventDetail() {
   const handleClose = () => {
     closeEvent(event.id, handler)
   }
+
+  const shortSessionId = (id: string) => id.slice(-8).toUpperCase()
+
+  const sourceSessions = (event.source_session_ids || [])
+    .map(sid => importSessions.find(s => s.id === sid))
+    .filter(Boolean)
+
+  const sourceBatches = (event.source_batch_ids || [])
+    .map(bid => importBatches.find(b => b.id === bid))
+    .filter(Boolean)
+
+  const uniqueSourceFiles = Array.from(new Set(evidences.map(e => e.source_file).filter(Boolean)))
   
   return (
     <div className="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden h-full flex flex-col">
@@ -138,6 +171,102 @@ export function EventDetail() {
               </p>
             </div>
           )}
+
+          <div className="p-4 bg-slate-50 rounded-xl border border-slate-200 space-y-3">
+            <div className="flex items-center gap-2 mb-1">
+              <Activity className="w-4 h-4 text-slate-600" />
+              <h4 className="font-semibold text-slate-700 text-sm">数据溯源</h4>
+            </div>
+
+            {event._is_from_undone_session && (
+              <div className="flex items-start gap-2 p-2.5 rounded-lg bg-rose-50 border border-rose-200">
+                <AlertTriangle className="w-4 h-4 text-rose-600 flex-shrink-0 mt-0.5" />
+                <span className="text-sm font-semibold text-rose-700">
+                  ⚠️ 该事件来自已撤销会话，建议删除
+                </span>
+              </div>
+            )}
+
+            <div>
+              <div className="flex items-center gap-1.5 mb-2">
+                <Layers className="w-3.5 h-3.5 text-slate-500" />
+                <span className="text-xs font-medium text-slate-600">来源会话</span>
+              </div>
+              {sourceSessions.length > 0 ? (
+                <div className="space-y-1.5">
+                  {sourceSessions.map((s) => s && (
+                    <div key={s.id} className="flex items-center gap-2 text-xs bg-white rounded-lg p-2 border border-slate-200">
+                      <code className="font-mono text-[11px] bg-slate-100 px-1.5 py-0.5 rounded text-slate-700">
+                        {shortSessionId(s.id)}
+                      </code>
+                      <span className={`px-1.5 py-0.5 rounded-full text-[11px] font-medium ${actionTypeBadge[s.action_type]?.color || 'bg-slate-100 text-slate-700'}`}>
+                        {actionTypeBadge[s.action_type]?.label || s.action_type}
+                      </span>
+                      <span className="text-slate-500 ml-auto">
+                        {formatTime(s.created_at)}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <p className="text-xs text-slate-400 bg-white rounded-lg p-2 border border-dashed border-slate-200">
+                  未知（版本兼容）
+                </p>
+              )}
+            </div>
+
+            <div>
+              <div className="flex items-center gap-1.5 mb-2">
+                <Database className="w-3.5 h-3.5 text-slate-500" />
+                <span className="text-xs font-medium text-slate-600">来源批次</span>
+              </div>
+              {sourceBatches.length > 0 ? (
+                <div className="space-y-1.5">
+                  {sourceBatches.map((b) => {
+                    if (!b) return null
+                    const ftCfg = fileTypeBadge[b.file_type]
+                    const FIcon = ftCfg?.icon || Database
+                    return (
+                      <div key={b.id} className="flex items-center gap-2 text-xs bg-white rounded-lg p-2 border border-slate-200">
+                        <div className={`w-5 h-5 rounded flex items-center justify-center ${ftCfg?.iconBg || 'bg-slate-100'} flex-shrink-0`}>
+                          <FIcon className={`w-3 h-3 ${ftCfg?.iconColor || 'text-slate-600'}`} />
+                        </div>
+                        <span className="text-slate-700 font-medium truncate max-w-[160px]" title={b.file_name}>
+                          {b.file_name}
+                        </span>
+                        <span className={`px-1.5 py-0.5 rounded-full text-[11px] font-medium ${ftCfg?.badgeColor || 'bg-slate-100 text-slate-700'} ml-auto`}>
+                          {ftCfg?.label || b.file_type}
+                        </span>
+                      </div>
+                    )
+                  })}
+                </div>
+              ) : (
+                <p className="text-xs text-slate-400 bg-white rounded-lg p-2 border border-dashed border-slate-200">
+                  未知（版本兼容）
+                </p>
+              )}
+            </div>
+
+            {uniqueSourceFiles.length > 0 && (
+              <div>
+                <div className="flex items-center gap-1.5 mb-2">
+                  <Link2 className="w-3.5 h-3.5 text-slate-500" />
+                  <span className="text-xs font-medium text-slate-600">证据来源文件</span>
+                </div>
+                <div className="space-y-1">
+                  {uniqueSourceFiles.map((file, idx) => (
+                    <div key={idx} className="flex items-center gap-2 text-xs bg-white rounded-lg p-2 border border-slate-200">
+                      <FileText className="w-3.5 h-3.5 text-slate-500 flex-shrink-0" />
+                      <span className="text-sky-600 hover:text-sky-700 underline decoration-dotted cursor-default truncate" title={file}>
+                        {file}
+                      </span>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+          </div>
           
           <div>
             <label className="block text-sm font-medium text-slate-600 mb-1.5">

@@ -10,11 +10,17 @@ import {
   ArrowLeftRight,
   SkipForward,
   AlertCircle,
+  ArrowRight,
+  RefreshCw,
+  ArrowLeft,
+  Gauge,
+  Database,
+  History,
 } from 'lucide-react'
 import { Modal } from '../common/Modal'
 import { useAppStore } from '../../store/useAppStore'
 import { parseScenePackage } from '../../utils/scenePackage'
-import { ScenePackage, ReplayMode, ScenePackageReplayResult } from '../../types'
+import { ScenePackage, ReplayMode, ScenePackageReplayResult, ReplayConflictAnalysis, ConflictChoice, ConflictChoiceType } from '../../types'
 
 interface ScenePackageReplayModalProps {
   isOpen: boolean
@@ -22,16 +28,18 @@ interface ScenePackageReplayModalProps {
 }
 
 export function ScenePackageReplayModal({ isOpen, onClose }: ScenePackageReplayModalProps) {
-  const [step, setStep] = useState<'select' | 'choose' | 'done'>('select')
+  const [step, setStep] = useState<'select' | 'choose' | 'resolve_conflicts' | 'confirm' | 'done'>('select')
   const [fileName, setFileName] = useState<string>('')
   const [parsedPackage, setParsedPackage] = useState<ScenePackage | null>(null)
   const [parseErrors, setParseErrors] = useState<string[]>([])
   const [mode, setMode] = useState<ReplayMode>('merge')
   const [isProcessing, setIsProcessing] = useState(false)
   const [replayResult, setReplayResult] = useState<ScenePackageReplayResult | null>(null)
+  const [conflictAnalysis, setConflictAnalysis] = useState<ReplayConflictAnalysis | null>(null)
+  const [conflictChoices, setConflictChoices] = useState<ConflictChoice[]>([])
 
   const fileInputRef = useRef<HTMLInputElement>(null)
-  const { replayScenePackageData, addToast } = useAppStore()
+  const { replayScenePackageData, analyzeReplayConflictsUI, addToast } = useAppStore()
 
   const handleFileSelect = async (file: File | null) => {
     if (!file) return
@@ -57,11 +65,49 @@ export function ScenePackageReplayModal({ isOpen, onClose }: ScenePackageReplayM
     }
   }
 
+  const handleContinueFromChoose = () => {
+    if (!parsedPackage) return
+    setIsProcessing(true)
+    try {
+      const analysis = analyzeReplayConflictsUI(parsedPackage)
+      setConflictAnalysis(analysis)
+      setConflictChoices(analysis.choices_needed.map(c => ({ ...c })))
+      const hasConflicts =
+        analysis.same_device_time_conflicts.length > 0 ||
+        analysis.batch_duplicates.length > 0 ||
+        analysis.undone_sessions.length > 0 ||
+        (analysis.threshold_diff && analysis.threshold_diff.differences.length > 0)
+      if (hasConflicts) {
+        setStep('resolve_conflicts')
+      } else {
+        setStep('confirm')
+      }
+    } catch (e) {
+      addToast('error', '冲突分析失败: ' + (e instanceof Error ? e.message : String(e)))
+    } finally {
+      setIsProcessing(false)
+    }
+  }
+
+  const updateConflictChoice = (key: string, choice: ConflictChoiceType) => {
+    setConflictChoices(prev =>
+      prev.map(c => (c.key === key ? { ...c, choice } : c))
+    )
+  }
+
+  const getPendingCount = (): number => {
+    return conflictChoices.length
+  }
+
+  const handleContinueFromResolve = () => {
+    setStep('confirm')
+  }
+
   const handleReplay = () => {
     if (!parsedPackage) return
     setIsProcessing(true)
     try {
-      const result = replayScenePackageData(parsedPackage, mode)
+      const result = replayScenePackageData(parsedPackage, mode, conflictChoices.length > 0 ? conflictChoices : undefined)
       setReplayResult(result)
       setStep('done')
     } catch (e) {
@@ -78,6 +124,8 @@ export function ScenePackageReplayModal({ isOpen, onClose }: ScenePackageReplayM
     setParseErrors([])
     setMode('merge')
     setReplayResult(null)
+    setConflictAnalysis(null)
+    setConflictChoices([])
     setIsProcessing(false)
     if (fileInputRef.current) fileInputRef.current.value = ''
   }
@@ -117,9 +165,53 @@ export function ScenePackageReplayModal({ isOpen, onClose }: ScenePackageReplayM
     },
   ]
 
+  const sameDeviceChoices = conflictChoices.filter(c => c.conflict_type === 'same_device_time')
+  const batchDupChoices = conflictChoices.filter(c => c.conflict_type === 'batch_duplicate')
+  const undoneSessChoices = conflictChoices.filter(c => c.conflict_type === 'undone_session')
+  const thresholdDiffChoices = conflictChoices.filter(c => c.conflict_type === 'threshold_diff')
+
   return (
-    <Modal isOpen={isOpen} onClose={handleClose} title="回放场景包" size="lg">
+    <Modal isOpen={isOpen} onClose={handleClose} title="回放场景包" size="xl">
       <div className="p-6">
+        <div className="flex items-center gap-2 mb-6 text-sm flex-wrap">
+          <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full ${step === 'select' ? 'bg-sky-100 text-sky-700' : 'text-slate-500'}`}>
+            <Upload className="w-3.5 h-3.5" />
+            1. 选择文件
+          </div>
+          <ArrowRight className="w-3 h-3 text-slate-300" />
+          <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full ${step === 'choose' ? 'bg-sky-100 text-sky-700' : 'text-slate-500'}`}>
+            <ArrowLeftRight className="w-3.5 h-3.5" />
+            2. 选择策略
+          </div>
+          {(step === 'resolve_conflicts' || step === 'confirm' || step === 'done') && (
+            <>
+              <ArrowRight className="w-3 h-3 text-slate-300" />
+              <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full ${step === 'resolve_conflicts' ? 'bg-sky-100 text-sky-700' : 'text-slate-500'}`}>
+                <AlertTriangle className="w-3.5 h-3.5" />
+                3. 解决冲突
+              </div>
+            </>
+          )}
+          {(step === 'confirm' || step === 'done') && (
+            <>
+              <ArrowRight className="w-3 h-3 text-slate-300" />
+              <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full ${step === 'confirm' ? 'bg-sky-100 text-sky-700' : 'text-slate-500'}`}>
+                <CheckCircle className="w-3.5 h-3.5" />
+                4. 确认
+              </div>
+            </>
+          )}
+          {step === 'done' && (
+            <>
+              <ArrowRight className="w-3 h-3 text-slate-300" />
+              <div className={`flex items-center gap-1.5 px-3 py-1.5 rounded-full bg-emerald-100 text-emerald-700`}>
+                <CheckCheck className="w-3.5 h-3.5" />
+                5. 完成
+              </div>
+            </>
+          )}
+        </div>
+
         {step === 'select' && (
           <div>
             <div
@@ -258,6 +350,251 @@ export function ScenePackageReplayModal({ isOpen, onClose }: ScenePackageReplayM
           </div>
         )}
 
+        {step === 'resolve_conflicts' && conflictAnalysis && (
+          <div className="space-y-4">
+            <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 flex items-start gap-2">
+              <AlertTriangle className="w-4 h-4 text-amber-600 mt-0.5 flex-shrink-0" />
+              <div className="text-xs text-amber-800">
+                <p className="font-medium mb-1">检测到 {conflictAnalysis.total_conflicts} 处潜在冲突</p>
+                <p>请在下方选择每类冲突的处理方式。所有选择将合并到本次回放中。</p>
+              </div>
+            </div>
+
+            {sameDeviceChoices.length > 0 && (
+              <div className="border border-slate-200 rounded-xl overflow-hidden">
+                <div className="bg-slate-50 px-4 py-2.5 border-b border-slate-200 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Database className="w-4 h-4 text-slate-600" />
+                    <span className="text-sm font-medium text-slate-700">
+                      同设备同时间冲突
+                    </span>
+                    <span className="text-xs bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full">
+                      {sameDeviceChoices.length}
+                    </span>
+                  </div>
+                </div>
+                <div className="max-h-56 overflow-y-auto divide-y divide-slate-100">
+                  {sameDeviceChoices.slice(0, 10).map((c) => (
+                    <div key={c.key} className="px-4 py-2.5 flex items-center justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="flex items-center gap-2 text-xs">
+                          <span className="font-mono bg-slate-100 px-1.5 py-0.5 rounded text-slate-700">
+                            {c.device_id || '-'}
+                          </span>
+                          <span className="text-slate-500">
+                            {(c.timestamp || '').slice(0, 19)}
+                          </span>
+                        </div>
+                        <p className="text-xs text-slate-500 mt-1 truncate">{c.description}</p>
+                      </div>
+                      <select
+                        value={c.choice}
+                        onChange={(e) => updateConflictChoice(c.key, e.target.value as ConflictChoiceType)}
+                        className="text-xs border border-slate-200 rounded-md px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-sky-400"
+                      >
+                        <option value="keep_both">保留两者</option>
+                        <option value="skip">跳过</option>
+                        <option value="overwrite">覆盖</option>
+                      </select>
+                    </div>
+                  ))}
+                  {sameDeviceChoices.length > 10 && (
+                    <div className="px-4 py-2 text-xs text-slate-500 bg-slate-50">
+                      ... 还有 {sameDeviceChoices.length - 10} 条冲突，以上方默认策略处理
+                    </div>
+                  )}
+                </div>
+              </div>
+            )}
+
+            {batchDupChoices.length > 0 && (
+              <div className="border border-slate-200 rounded-xl overflow-hidden">
+                <div className="bg-slate-50 px-4 py-2.5 border-b border-slate-200 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <RefreshCw className="w-4 h-4 text-slate-600" />
+                    <span className="text-sm font-medium text-slate-700">
+                      重复批次
+                    </span>
+                    <span className="text-xs bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full">
+                      {batchDupChoices.length}
+                    </span>
+                  </div>
+                </div>
+                <div className="max-h-56 overflow-y-auto divide-y divide-slate-100">
+                  {batchDupChoices.map((c) => (
+                    <div key={c.key} className="px-4 py-2.5 flex items-center justify-between gap-3">
+                      <div className="flex-1 min-w-0">
+                        <div className="text-xs font-medium text-slate-700 truncate">
+                          {c.new_source}
+                        </div>
+                        <p className="text-xs text-slate-500 mt-0.5 truncate">{c.description}</p>
+                      </div>
+                      <select
+                        value={c.choice}
+                        onChange={(e) => updateConflictChoice(c.key, e.target.value as ConflictChoiceType)}
+                        className="text-xs border border-slate-200 rounded-md px-2 py-1 bg-white focus:outline-none focus:ring-1 focus:ring-sky-400"
+                      >
+                        <option value="skip">跳过</option>
+                        <option value="overwrite">覆盖</option>
+                      </select>
+                    </div>
+                  ))}
+                </div>
+              </div>
+            )}
+
+            {undoneSessChoices.length > 0 && (
+              <div className="border border-slate-200 rounded-xl overflow-hidden">
+                <div className="bg-slate-50 px-4 py-2.5 border-b border-slate-200 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <History className="w-4 h-4 text-slate-600" />
+                    <span className="text-sm font-medium text-slate-700">
+                      已撤销会话
+                    </span>
+                    <span className="text-xs bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full">
+                      {undoneSessChoices.length}
+                    </span>
+                  </div>
+                </div>
+                <div className="px-4 py-3 space-y-2">
+                  <p className="text-xs text-slate-600">
+                    该场景包含已撤销会话记录，是否一并恢复？
+                  </p>
+                  <div className="max-h-40 overflow-y-auto space-y-1 mb-2">
+                    {undoneSessChoices.slice(0, 10).map((c) => (
+                      <div key={c.key} className="text-xs text-slate-500 flex items-center justify-between gap-2">
+                        <span className="truncate">会话 {c.key.slice(0, 10)}...</span>
+                        <span className="text-slate-400">{c.description}</span>
+                      </div>
+                    ))}
+                  </div>
+                  {undoneSessChoices.map((c) => (
+                    <div key={c.key}>
+                      <select
+                        value={c.choice}
+                        onChange={(e) => updateConflictChoice(c.key, e.target.value as ConflictChoiceType)}
+                        className="w-full text-xs border border-slate-200 rounded-md px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-sky-400"
+                      >
+                        <option value="skip">跳过（保持已撤销状态）</option>
+                        <option value="overwrite">恢复（重新激活）</option>
+                      </select>
+                    </div>
+                  ))[0]}
+                </div>
+              </div>
+            )}
+
+            {thresholdDiffChoices.length > 0 && conflictAnalysis.threshold_diff && (
+              <div className="border border-slate-200 rounded-xl overflow-hidden">
+                <div className="bg-slate-50 px-4 py-2.5 border-b border-slate-200 flex items-center justify-between">
+                  <div className="flex items-center gap-2">
+                    <Gauge className="w-4 h-4 text-slate-600" />
+                    <span className="text-sm font-medium text-slate-700">
+                      阈值差异
+                    </span>
+                    <span className="text-xs bg-slate-200 text-slate-600 px-2 py-0.5 rounded-full">
+                      {conflictAnalysis.threshold_diff.differences.length}
+                    </span>
+                  </div>
+                </div>
+                <div className="px-4 py-3 space-y-2">
+                  {conflictAnalysis.threshold_diff.differences.map((diff, i) => (
+                    <div key={i} className="flex items-center justify-between gap-3 py-1">
+                      <div className="flex-1 flex items-center gap-2 text-xs">
+                        <span className="font-medium text-slate-700 min-w-[120px]">{diff.field}</span>
+                        <span className="text-slate-500">{String(diff.current)}</span>
+                        <ArrowRight className="w-3 h-3 text-slate-400 flex-shrink-0" />
+                        <span className="text-sky-700 font-medium">{String(diff.imported)}</span>
+                      </div>
+                    </div>
+                  ))}
+                  <div className="pt-2 mt-2 border-t border-slate-100">
+                    <label className="text-xs text-slate-500 block mb-1">整体处理方式</label>
+                    {thresholdDiffChoices.length > 0 && (
+                      <select
+                        value={thresholdDiffChoices[0].choice}
+                        onChange={(e) => {
+                          const val = e.target.value as ConflictChoiceType
+                          thresholdDiffChoices.forEach((c) => updateConflictChoice(c.key, val))
+                        }}
+                        className="w-full text-xs border border-slate-200 rounded-md px-2 py-1.5 bg-white focus:outline-none focus:ring-1 focus:ring-sky-400"
+                      >
+                        <option value="merge">合并（对每个差异取更严格值）</option>
+                        <option value="skip">保留当前（不导入阈值）</option>
+                        <option value="overwrite">覆盖（使用导入的阈值）</option>
+                      </select>
+                    )}
+                  </div>
+                </div>
+              </div>
+            )}
+          </div>
+        )}
+
+        {step === 'confirm' && parsedPackage && (
+          <div className="space-y-5">
+            <div className="bg-slate-50 rounded-xl p-4 border border-slate-200">
+              <div className="flex items-center gap-2 mb-3">
+                <FileJson className="w-4 h-4 text-slate-600" />
+                <span className="text-sm font-medium text-slate-700">{fileName}</span>
+              </div>
+              <div className="grid grid-cols-2 gap-3 text-xs">
+                <div>
+                  <p className="text-slate-400 mb-0.5">回放策略</p>
+                  <p className="text-slate-700 font-medium">
+                    {mode === 'overwrite' ? '覆盖' : mode === 'merge' ? '合并' : '跳过'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-slate-400 mb-0.5">冲突处理</p>
+                  <p className="text-slate-700 font-medium">
+                    {conflictChoices.length > 0 ? `${conflictChoices.length} 项已选择` : '无冲突'}
+                  </p>
+                </div>
+                <div>
+                  <p className="text-slate-400 mb-0.5">待导入批次</p>
+                  <p className="text-slate-700">{parsedPackage.import_batches.length} 个</p>
+                </div>
+                <div>
+                  <p className="text-slate-400 mb-0.5">待处理事件</p>
+                  <p className="text-slate-700">{parsedPackage.events.length} 个</p>
+                </div>
+              </div>
+            </div>
+
+            {conflictChoices.length > 0 && (
+              <div className="bg-sky-50 border border-sky-200 rounded-lg p-3">
+                <div className="flex items-center gap-2 mb-2">
+                  <CheckCircle className="w-4 h-4 text-sky-600" />
+                  <span className="text-sm font-medium text-sky-700">冲突处理摘要</span>
+                </div>
+                <div className="grid grid-cols-4 gap-2 text-center text-xs">
+                  <div className="bg-white rounded p-2">
+                    <p className="text-base font-bold text-slate-700">{sameDeviceChoices.length}</p>
+                    <p className="text-slate-500 mt-0.5">时间冲突</p>
+                  </div>
+                  <div className="bg-white rounded p-2">
+                    <p className="text-base font-bold text-slate-700">{batchDupChoices.length}</p>
+                    <p className="text-slate-500 mt-0.5">重复批次</p>
+                  </div>
+                  <div className="bg-white rounded p-2">
+                    <p className="text-base font-bold text-slate-700">{undoneSessChoices.length}</p>
+                    <p className="text-slate-500 mt-0.5">撤销会话</p>
+                  </div>
+                  <div className="bg-white rounded p-2">
+                    <p className="text-base font-bold text-slate-700">{thresholdDiffChoices.length}</p>
+                    <p className="text-slate-500 mt-0.5">阈值差异</p>
+                  </div>
+                </div>
+              </div>
+            )}
+
+            <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-500">
+              ⚠️ 点击「确认回放」后将写入批次日志。回放前已自动生成撤销快照，可在导入历史中撤销本次操作。
+            </div>
+          </div>
+        )}
+
         {step === 'done' && replayResult && (
           <div className="text-center py-6">
             <CheckCircle className="w-14 h-14 text-emerald-500 mx-auto mb-4" />
@@ -338,16 +675,74 @@ export function ScenePackageReplayModal({ isOpen, onClose }: ScenePackageReplayM
                   取消
                 </button>
                 <button
-                  onClick={handleReplay}
+                  onClick={handleContinueFromChoose}
                   disabled={isProcessing}
                   className="flex items-center gap-2 px-5 py-2 bg-sky-600 text-white text-sm font-medium rounded-lg hover:bg-sky-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
                 >
                   {isProcessing ? (
                     <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
                   ) : (
+                    <ArrowRight className="w-4 h-4" />
+                  )}
+                  继续
+                </button>
+              </div>
+            </>
+          )}
+          {step === 'resolve_conflicts' && (
+            <>
+              <button
+                onClick={() => setStep('choose')}
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                返回
+              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleClose}
+                  className="px-4 py-2 text-sm font-medium text-red-600 bg-red-50 rounded-lg hover:bg-red-100 transition-colors"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={handleContinueFromResolve}
+                  disabled={isProcessing}
+                  className="flex items-center gap-2 px-5 py-2 bg-sky-600 text-white text-sm font-medium rounded-lg hover:bg-sky-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  <CheckCheck className="w-4 h-4" />
+                  继续导入（{getPendingCount()} 个待确认）
+                </button>
+              </div>
+            </>
+          )}
+          {step === 'confirm' && (
+            <>
+              <button
+                onClick={() => setStep(conflictAnalysis ? 'resolve_conflicts' : 'choose')}
+                className="flex items-center gap-2 px-4 py-2 text-sm font-medium text-slate-600 bg-slate-100 rounded-lg hover:bg-slate-200 transition-colors"
+              >
+                <ArrowLeft className="w-4 h-4" />
+                返回
+              </button>
+              <div className="flex gap-2">
+                <button
+                  onClick={handleClose}
+                  className="px-4 py-2 text-sm font-medium text-red-600 bg-red-50 rounded-lg hover:bg-red-100 transition-colors"
+                >
+                  取消
+                </button>
+                <button
+                  onClick={handleReplay}
+                  disabled={isProcessing}
+                  className="flex items-center gap-2 px-5 py-2 bg-emerald-600 text-white text-sm font-medium rounded-lg hover:bg-emerald-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
+                >
+                  {isProcessing ? (
+                    <div className="w-4 h-4 border-2 border-white/30 border-t-white rounded-full animate-spin" />
+                  ) : (
                     <RotateCcw className="w-4 h-4" />
                   )}
-                  开始回放
+                  确认回放
                 </button>
               </div>
             </>

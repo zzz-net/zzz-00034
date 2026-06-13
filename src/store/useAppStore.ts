@@ -9,11 +9,16 @@ import {
   ImportBatch,
   EventStatus,
   ToastMessage,
+  ScenePackagePreview,
+  ScenePackage,
+  ScenePackageReplayResult,
+  ReplayMode,
 } from '../types'
 import { DEFAULT_THRESHOLD, validateThresholdConfig } from '../utils/validator'
 import { detectSensorAnomalies, notesToEvidence, alarmsToEvidence } from '../utils/anomalyDetector'
 import { mergeEvents } from '../utils/eventMerger'
 import { generateId } from '../utils/csvParser'
+import { replayScenePackage } from '../utils/scenePackage'
 
 interface AppState {
   threshold: ThresholdConfig
@@ -46,6 +51,16 @@ interface AppState {
     batchInfo: Omit<ImportBatch, 'id' | 'import_time'>
   ) => void
   hasBatch: (fileHash: string) => boolean
+
+  applyScenePackage: (preview: ScenePackagePreview) => {
+    batches: ImportBatch[]
+    newEvents: number
+    totalRecords: number
+  }
+  replayScenePackageData: (
+    pkg: ScenePackage,
+    mode: ReplayMode
+  ) => ScenePackageReplayResult
 
   selectEvent: (eventId: string | null) => void
   updateEventStatus: (eventId: string, status: EventStatus, handler: string) => void
@@ -361,6 +376,136 @@ export const useAppStore = create<AppState>((set, get) => ({
     })
 
     get().addToast('success', `导入完成，共 ${records.length} 条告警`)
+  },
+
+  applyScenePackage: (preview) => {
+    const state = get()
+    const now = new Date().toISOString()
+    const newBatches: ImportBatch[] = []
+
+    for (const fp of preview.files) {
+      if (fp.is_duplicate) continue
+      const batch: ImportBatch = {
+        id: preview.package_id + '-' + fp.file_type,
+        file_type: fp.file_type,
+        file_name: fp.file_name,
+        import_time: now,
+        record_count: fp.valid_count,
+        error_count: fp.error_count,
+        errors: fp.errors,
+        file_hash: fp.file_hash,
+      }
+      newBatches.push(batch)
+    }
+
+    const newSensorRecords = [...state.sensorRecords, ...preview._sensorRecords]
+    const newManualNotes = [...state.manualNotes, ...preview._noteRecords]
+    const newAlarmRecords = [...state.alarmRecords, ...preview._alarmRecords]
+    const newImportBatches = [...state.importBatches, ...newBatches]
+
+    const result = regenerateAll(
+      newSensorRecords,
+      newManualNotes,
+      newAlarmRecords,
+      state.threshold,
+      state.events
+    )
+
+    set({
+      sensorRecords: newSensorRecords,
+      manualNotes: newManualNotes,
+      alarmRecords: newAlarmRecords,
+      importBatches: newImportBatches,
+      events: result.events,
+      evidences: result.evidences,
+    })
+
+    const newState = get()
+    saveToStorage({
+      threshold: newState.threshold,
+      sensorRecords: newState.sensorRecords,
+      manualNotes: newState.manualNotes,
+      alarmRecords: newState.alarmRecords,
+      evidences: newState.evidences,
+      events: newState.events,
+      importBatches: newState.importBatches,
+    })
+
+    const totalRecords = preview._sensorRecords.length + preview._noteRecords.length + preview._alarmRecords.length
+    const newEventCount = result.events.length - state.events.length
+    get().addToast(
+      'success',
+      `场景包导入完成: ${totalRecords} 条记录, ${Math.max(0, newEventCount)} 个新事件, ${newBatches.length} 个批次`
+    )
+
+    return {
+      batches: newBatches,
+      newEvents: Math.max(0, newEventCount),
+      totalRecords,
+    }
+  },
+
+  replayScenePackageData: (pkg, mode) => {
+    const state = get()
+    const replay = replayScenePackage(
+      pkg,
+      mode,
+      state.sensorRecords,
+      state.manualNotes,
+      state.alarmRecords,
+      state.importBatches,
+      state.events,
+      state.evidences
+    )
+
+    let finalEvents = replay.events
+    let finalEvidences = replay.evidences
+    let finalThreshold = replay.threshold
+
+    if (mode !== 'overwrite') {
+      const regen = regenerateAll(
+        replay.sensorRecords,
+        replay.manualNotes,
+        replay.alarmRecords,
+        replay.threshold,
+        replay.events
+      )
+      finalEvents = regen.events
+      finalEvidences = regen.evidences
+    }
+
+    set({
+      threshold: finalThreshold,
+      sensorRecords: replay.sensorRecords,
+      manualNotes: replay.manualNotes,
+      alarmRecords: replay.alarmRecords,
+      importBatches: replay.batches,
+      events: finalEvents,
+      evidences: finalEvidences,
+    })
+
+    const newState = get()
+    saveToStorage({
+      threshold: newState.threshold,
+      sensorRecords: newState.sensorRecords,
+      manualNotes: newState.manualNotes,
+      alarmRecords: newState.alarmRecords,
+      evidences: newState.evidences,
+      events: newState.events,
+      importBatches: newState.importBatches,
+    })
+
+    const modeText: Record<ReplayMode, string> = {
+      overwrite: '覆盖',
+      merge: '合并',
+      skip: '跳过',
+    }
+    get().addToast(
+      replay.result.errors.length > 0 ? 'warning' : 'success',
+      `场景包回放(${modeText[mode]})完成: ${replay.result.imported_batches.length} 批次导入, ${replay.result.errors.length} 条提示`
+    )
+
+    return replay.result
   },
 
   selectEvent: (eventId) => set({ selectedEventId: eventId }),

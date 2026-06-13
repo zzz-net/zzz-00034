@@ -1,22 +1,36 @@
 import { useState } from 'react'
-import { Download, FileJson, FileSpreadsheet, ChevronDown } from 'lucide-react'
+import { Download, FileJson, FileSpreadsheet, ChevronDown, Package } from 'lucide-react'
 import { useAppStore } from '../../store/useAppStore'
 import { exportEventsToCSV, exportEvidencesToCSV, exportAllToJSON, downloadFile } from '../../utils/exporter'
+import { exportScenePackage } from '../../utils/scenePackage'
 
 interface ExportPanelProps {
   onExported?: () => void
 }
 
 export function ExportPanel({ onExported }: ExportPanelProps) {
-  const { events, evidences, addToast } = useAppStore()
+  const { events, evidences, addToast, threshold, sensorRecords, manualNotes, alarmRecords, importBatches } = useAppStore()
   const [isOpen, setIsOpen] = useState(false)
-  const [format, setFormat] = useState<'csv' | 'json'>('csv')
+  const [format, setFormat] = useState<'csv' | 'json' | 'scene'>('csv')
   const [scope, setScope] = useState<'events' | 'evidences' | 'all'>('all')
   
   const handleExport = () => {
     const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19)
     
-    if (format === 'csv') {
+    if (format === 'scene') {
+      const pkg = exportScenePackage(
+        threshold,
+        sensorRecords,
+        manualNotes,
+        alarmRecords,
+        importBatches,
+        events,
+        evidences
+      )
+      const json = JSON.stringify(pkg, null, 2)
+      downloadFile(json, `scene_package_${timestamp}.json`, 'application/json')
+      addToast('success', '场景包导出成功')
+    } else if (format === 'csv') {
       if (scope === 'events' || scope === 'all') {
         const csv = exportEventsToCSV(events, evidences)
         downloadFile(csv, `events_${timestamp}.csv`, 'text/csv;charset=utf-8')
@@ -55,28 +69,39 @@ export function ExportPanel({ onExported }: ExportPanelProps) {
                 <label className="block text-sm font-medium text-slate-600 mb-2">
                   导出格式
                 </label>
-                <div className="flex gap-2">
+                <div className="flex flex-col gap-2">
                   <button
                     onClick={() => setFormat('csv')}
-                    className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${
+                    className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${
                       format === 'csv'
                         ? 'bg-sky-50 border-sky-200 text-sky-700'
                         : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
                     }`}
                   >
                     <FileSpreadsheet className="w-4 h-4" />
-                    CSV
+                    CSV（事件/证据）
                   </button>
                   <button
                     onClick={() => setFormat('json')}
-                    className={`flex-1 flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${
+                    className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${
                       format === 'json'
                         ? 'bg-sky-50 border-sky-200 text-sky-700'
                         : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
                     }`}
                   >
                     <FileJson className="w-4 h-4" />
-                    JSON
+                    JSON（仅事件+证据）
+                  </button>
+                  <button
+                    onClick={() => setFormat('scene')}
+                    className={`flex items-center gap-2 px-3 py-2 text-sm font-medium rounded-lg border transition-colors ${
+                      format === 'scene'
+                        ? 'bg-sky-50 border-sky-200 text-sky-700'
+                        : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-50'
+                    }`}
+                  >
+                    <Package className="w-4 h-4" />
+                    场景包（完整可回放）
                   </button>
                 </div>
               </div>
@@ -109,14 +134,30 @@ export function ExportPanel({ onExported }: ExportPanelProps) {
                   </div>
                 </div>
               )}
+
+              {format === 'scene' && (
+                <div className="text-xs text-slate-500 bg-slate-50 rounded-lg p-3 space-y-1">
+                  <p>场景包包含完整状态，可在另一台设备/环境中回放：</p>
+                  <ul className="list-disc list-inside space-y-0.5 ml-1">
+                    <li>当前阈值配置</li>
+                    <li>所有导入批次记录</li>
+                    <li>全部原始数据记录</li>
+                    <li>事件状态、处理人、备注</li>
+                  </ul>
+                </div>
+              )}
               
               <div className="text-xs text-slate-400">
-                共 {events.length} 个事件，{evidences.length} 条证据
+                {format === 'scene' ? (
+                  <>共 {importBatches.length} 批次，{events.length} 个事件，{evidences.length} 条证据</>
+                ) : (
+                  <>共 {events.length} 个事件，{evidences.length} 条证据</>
+                )}
               </div>
               
               <button
                 onClick={handleExport}
-                disabled={events.length === 0}
+                disabled={format !== 'scene' && events.length === 0}
                 className="w-full flex items-center justify-center gap-2 px-4 py-2.5 bg-sky-600 text-white text-sm font-medium rounded-lg hover:bg-sky-700 disabled:opacity-50 disabled:cursor-not-allowed transition-colors"
               >
                 <Download className="w-4 h-4" />

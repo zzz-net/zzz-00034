@@ -4,6 +4,8 @@ export type EvidenceType = 'sensor_anomaly' | 'manual_note' | 'alarm'
 
 export type FileType = 'sensor' | 'note' | 'alarm'
 
+export type ReplayMode = 'overwrite' | 'merge' | 'skip'
+
 export interface ThresholdConfig {
   temp_min: number
   temp_max: number
@@ -101,4 +103,70 @@ export interface ToastMessage {
   id: string
   type: 'success' | 'error' | 'info' | 'warning'
   message: string
+}
+
+export interface ConflictDetail {
+  device_id: string
+  timestamp: string
+  existing_source: string
+  new_source: string
+  conflict_type: 'same_device_time' | 'batch_duplicate'
+  description: string
+}
+
+export interface FilePreview {
+  file_type: FileType
+  file_name: string
+  file_hash: string
+  total_rows: number
+  valid_count: number
+  error_count: number
+  errors: ImportError[]
+  is_duplicate: boolean
+}
+
+export interface ScenePackagePreview {
+  package_id: string
+  files: FilePreview[]
+  new_events_count: number
+  merged_events_count: number
+  conflicts: ConflictDetail[]
+  will_create_sensor_records: number
+  will_create_note_records: number
+  will_create_alarm_records: number
+  timestamp: string
+  _sensorRecords: SensorRecord[]
+  _noteRecords: ManualNote[]
+  _alarmRecords: AlarmRecord[]
+  _fileHashes: string[]
+}
+
+export interface ScenePackageFile {
+  name: string
+  hash: string
+  file_type: FileType
+  content: string
+}
+
+export interface ScenePackage {
+  version: 1
+  exported_at: string
+  threshold: ThresholdConfig
+  sensor_records: SensorRecord[]
+  manual_notes: ManualNote[]
+  alarm_records: AlarmRecord[]
+  import_batches: ImportBatch[]
+  events: Event[]
+  evidences: Evidence[]
+}
+
+export interface ScenePackageReplayResult {
+  success: boolean
+  mode: ReplayMode
+  skipped_batches: number
+  skipped_events: number
+  merged_events: number
+  overwritten_events: number
+  errors: string[]
+  imported_batches: ImportBatch[]
 }

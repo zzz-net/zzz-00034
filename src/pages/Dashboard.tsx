@@ -1,17 +1,24 @@
 import { useState } from 'react'
-import { Upload, AlertTriangle, CheckCircle, XCircle, Clock, Cpu, Trash2 } from 'lucide-react'
+import { Upload, AlertTriangle, CheckCircle, XCircle, Clock, Cpu, Trash2, History, RotateCcw, Package, ChevronDown } from 'lucide-react'
 import { StatsCard } from '../components/dashboard/StatsCard'
 import { ThresholdPanel } from '../components/dashboard/ThresholdPanel'
 import { EventList } from '../components/dashboard/EventList'
 import { EventDetail } from '../components/dashboard/EventDetail'
 import { ImportModal } from '../components/import/ImportModal'
+import { ScenePackageImportModal } from '../components/import/ScenePackageImportModal'
+import { ImportHistoryPanel } from '../components/import/ImportHistoryPanel'
+import { ScenePackageReplayModal } from '../components/import/ScenePackageReplayModal'
 import { ExportPanel } from '../components/export/ExportPanel'
 import { ToastContainer } from '../components/common/Toast'
 import { useAppStore } from '../store/useAppStore'
 
 export default function Dashboard() {
-  const { events, sensorRecords, manualNotes, alarmRecords, clearAllData, getDeviceIds } = useAppStore()
+  const { events, sensorRecords, manualNotes, alarmRecords, clearAllData, getDeviceIds, importBatches } = useAppStore()
   const [importOpen, setImportOpen] = useState(false)
+  const [sceneImportOpen, setSceneImportOpen] = useState(false)
+  const [historyOpen, setHistoryOpen] = useState(false)
+  const [replayOpen, setReplayOpen] = useState(false)
+  const [importMenuOpen, setImportMenuOpen] = useState(false)
   
   const pendingCount = events.filter(e => e.status === 'pending').length
   const confirmedCount = events.filter(e => e.status === 'confirmed').length
@@ -29,6 +36,9 @@ export default function Dashboard() {
     <div className="min-h-screen bg-slate-50">
       <ToastContainer />
       <ImportModal isOpen={importOpen} onClose={() => setImportOpen(false)} />
+      <ScenePackageImportModal isOpen={sceneImportOpen} onClose={() => setSceneImportOpen(false)} />
+      <ImportHistoryPanel isOpen={historyOpen} onClose={() => setHistoryOpen(false)} />
+      <ScenePackageReplayModal isOpen={replayOpen} onClose={() => setReplayOpen(false)} />
       
       <header className="bg-white border-b border-slate-200 sticky top-0 z-30">
         <div className="max-w-screen-2xl mx-auto px-6 py-4">
@@ -52,13 +62,61 @@ export default function Dashboard() {
                 清除数据
               </button>
               <ExportPanel />
+              
               <button
-                onClick={() => setImportOpen(true)}
-                className="flex items-center gap-2 px-5 py-2 bg-sky-600 text-white text-sm font-medium rounded-lg hover:bg-sky-700 focus:outline-none focus:ring-2 focus:ring-sky-300 transition-colors shadow-sm"
+                onClick={() => setHistoryOpen(true)}
+                className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-50 transition-colors"
               >
-                <Upload className="w-4 h-4" />
-                导入数据
+                <History className="w-4 h-4" />
+                导入历史
+                {importBatches.length > 0 && (
+                  <span className="ml-0.5 px-1.5 py-0.5 text-[10px] font-medium bg-sky-100 text-sky-700 rounded-full">
+                    {importBatches.length}
+                  </span>
+                )}
               </button>
+              
+              <button
+                onClick={() => setReplayOpen(true)}
+                className="flex items-center gap-2 px-4 py-2 bg-white border border-slate-200 text-slate-700 text-sm font-medium rounded-lg hover:bg-slate-50 transition-colors"
+              >
+                <RotateCcw className="w-4 h-4" />
+                回放场景包
+              </button>
+              
+              <div className="relative">
+                <button
+                  onClick={() => setImportMenuOpen(!importMenuOpen)}
+                  className="flex items-center gap-2 px-5 py-2 bg-sky-600 text-white text-sm font-medium rounded-lg hover:bg-sky-700 focus:outline-none focus:ring-2 focus:ring-sky-300 transition-colors shadow-sm"
+                >
+                  <Upload className="w-4 h-4" />
+                  导入数据
+                  <ChevronDown className={`w-4 h-4 transition-transform ${importMenuOpen ? 'rotate-180' : ''}`} />
+                </button>
+                
+                {importMenuOpen && (
+                  <>
+                    <div className="fixed inset-0 z-10" onClick={() => setImportMenuOpen(false)} />
+                    <div className="absolute right-0 top-full mt-2 w-52 bg-white rounded-xl border border-slate-200 shadow-lg z-20 overflow-hidden">
+                      <button
+                        onClick={() => { setImportOpen(true); setImportMenuOpen(false) }}
+                        className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 transition-colors text-left"
+                      >
+                        <Upload className="w-4 h-4 text-slate-500" />
+                        单文件导入
+                      </button>
+                      <button
+                        onClick={() => { setSceneImportOpen(true); setImportMenuOpen(false) }}
+                        className="w-full flex items-center gap-2 px-4 py-2.5 text-sm text-slate-700 hover:bg-slate-50 transition-colors text-left border-t border-slate-100"
+                      >
+                        <Package className="w-4 h-4 text-sky-600" />
+                        导入场景包
+                        <span className="ml-auto text-[10px] text-slate-400">推荐</span>
+                      </button>
+                    </div>
+                  </>
+                )}
+              </div>
             </div>
           </div>
         </div>
@@ -114,10 +172,11 @@ export default function Dashboard() {
               <h3 className="font-semibold text-slate-800 mb-3">使用说明</h3>
               <ol className="text-sm text-slate-600 space-y-2 list-decimal list-inside">
                 <li>配置温度、电压、离线阈值和合并窗口</li>
-                <li>导入传感器、备注、告警数据文件</li>
+                <li>使用「导入场景包」批量选择多个文件</li>
+                <li>预览后确认写入，可查看导入历史</li>
                 <li>系统自动检测异常并归并事件</li>
                 <li>点击事件查看详情，进行复核</li>
-                <li>支持 CSV/JSON 格式导出</li>
+                <li>支持导出场景包在其他环境回放</li>
               </ol>
             </div>
           </div>

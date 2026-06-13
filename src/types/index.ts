@@ -89,6 +89,10 @@ export interface ImportBatch {
   error_count: number
   errors: ImportError[]
   file_hash: string
+  conflicts?: ConflictDetail[]
+  replay_mode?: ReplayMode
+  resolution_summary?: string
+  affected_event_ids?: string[]
 }
 
 export interface ImportResult {
@@ -169,4 +173,6 @@ export interface ScenePackageReplayResult {
   overwritten_events: number
   errors: string[]
   imported_batches: ImportBatch[]
+  replay_batch?: ImportBatch
+  resolution_summary?: string
 }

@@ -59,6 +59,9 @@ export function ScenePackageImportModal({ isOpen, onClose }: ScenePackageImportM
     batches: number
     newEvents: number
     totalRecords: number
+    conflictCount: number
+    affectedEventCount: number
+    resolutionSummary: string
   } | null>(null)
   const sensorInputRef = useRef<HTMLInputElement>(null)
   const noteInputRef = useRef<HTMLInputElement>(null)
@@ -123,6 +126,9 @@ export function ScenePackageImportModal({ isOpen, onClose }: ScenePackageImportM
         batches: result.batches.length,
         newEvents: result.newEvents,
         totalRecords: result.totalRecords,
+        conflictCount: result.conflicts.length,
+        affectedEventCount: result.affectedEventIds.length,
+        resolutionSummary: result.resolutionSummary,
       })
       setStep('done')
     } catch (e) {
@@ -328,14 +334,26 @@ export function ScenePackageImportModal({ isOpen, onClose }: ScenePackageImportM
         )}
 
         {step === 'done' && applyResult && (
-          <div className="text-center py-8">
+          <div className="text-center py-6">
             <CheckCircle className="w-16 h-16 text-emerald-500 mx-auto mb-4" />
             <p className="text-lg font-semibold text-slate-800 mb-2">场景包导入成功</p>
-            <p className="text-sm text-slate-500 mb-6">
+            <p className="text-sm text-slate-500 mb-4">
               {applyResult.totalRecords} 条记录 · {applyResult.newEvents} 个新事件 · {applyResult.batches} 个批次
             </p>
+            {applyResult.conflictCount > 0 && (
+              <div className="bg-amber-50 border border-amber-200 rounded-lg p-3 mb-3 text-xs text-left max-w-md mx-auto">
+                <div className="flex items-center gap-2 mb-1">
+                  <AlertTriangle className="w-4 h-4 text-amber-500" />
+                  <span className="font-medium text-amber-700">冲突处理结果</span>
+                </div>
+                <p className="text-amber-800">{applyResult.resolutionSummary}</p>
+                {applyResult.affectedEventCount > 0 && (
+                  <p className="text-amber-700 mt-1">涉及 {applyResult.affectedEventCount} 个已有事件</p>
+                )}
+              </div>
+            )}
             <p className="text-xs text-slate-400">
-              导入记录已保存在本地，刷新或重开页面后可在导入历史中查看
+              导入记录已保存在本地，刷新或重开页面后可在导入历史中查看冲突处理结果
             </p>
           </div>
         )}

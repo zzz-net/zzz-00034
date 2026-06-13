@@ -288,6 +288,12 @@ export function ScenePackageReplayModal({ isOpen, onClose }: ScenePackageReplayM
                 <p className="text-xs text-amber-600 mt-0.5">跳过重复批次</p>
               </div>
             </div>
+            {replayResult.resolution_summary && (
+              <div className="mt-4 max-w-md mx-auto bg-sky-50 border border-sky-200 rounded-lg p-3 text-xs text-left">
+                <p className="font-medium text-sky-700 mb-1">处理结果</p>
+                <p className="text-sky-800">{replayResult.resolution_summary}</p>
+              </div>
+            )}
             {replayResult.errors.length > 0 && (
               <div className="mt-4 max-w-md mx-auto">
                 <p className="text-xs font-medium text-slate-600 mb-2 text-left">提示信息</p>
@@ -298,6 +304,9 @@ export function ScenePackageReplayModal({ isOpen, onClose }: ScenePackageReplayM
                 </div>
               </div>
             )}
+            <p className="text-xs text-slate-400 mt-4">
+              回放记录已保存在本地，刷新或重开页面后可在导入历史中查看
+            </p>
           </div>
         )}
 

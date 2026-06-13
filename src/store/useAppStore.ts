@@ -13,6 +13,7 @@ import {
   ScenePackage,
   ScenePackageReplayResult,
   ReplayMode,
+  ConflictDetail,
 } from '../types'
 import { DEFAULT_THRESHOLD, validateThresholdConfig } from '../utils/validator'
 import { detectSensorAnomalies, notesToEvidence, alarmsToEvidence } from '../utils/anomalyDetector'
@@ -56,6 +57,9 @@ interface AppState {
     batches: ImportBatch[]
     newEvents: number
     totalRecords: number
+    conflicts: ConflictDetail[]
+    affectedEventIds: string[]
+    resolutionSummary: string
   }
   replayScenePackageData: (
     pkg: ScenePackage,
@@ -383,6 +387,44 @@ export const useAppStore = create<AppState>((set, get) => ({
     const now = new Date().toISOString()
     const newBatches: ImportBatch[] = []
 
+    const batchConflicts = preview.conflicts.filter(c => c.conflict_type === 'batch_duplicate')
+    const sameDeviceConflicts = preview.conflicts.filter(c => c.conflict_type === 'same_device_time')
+
+    const affectedEventIds: string[] = []
+    for (const oldEv of state.events) {
+      for (const newEv of preview._sensorRecords
+        .concat(preview._noteRecords as any[])
+        .concat(preview._alarmRecords as any[])) {
+        if (oldEv.device_id === newEv.device_id) {
+          const oldStart = new Date(oldEv.start_time).getTime()
+          const oldEnd = new Date(oldEv.end_time).getTime()
+          const ts = new Date(newEv.timestamp).getTime()
+          if (ts >= oldStart && ts <= oldEnd) {
+            affectedEventIds.push(oldEv.id)
+            break
+          }
+        }
+      }
+    }
+
+    const resolutionParts: string[] = []
+    if (batchConflicts.length > 0) {
+      resolutionParts.push(`${batchConflicts.length} 个重复批次已跳过`)
+    }
+    if (sameDeviceConflicts.length > 0) {
+      resolutionParts.push(`${sameDeviceConflicts.length} 处同设备同时间冲突已记录（数据正常写入）`)
+    }
+    if (preview.new_events_count > 0) {
+      resolutionParts.push(`新增 ${preview.new_events_count} 个事件`)
+    }
+    if (preview.merged_events_count > 0) {
+      resolutionParts.push(`合并 ${preview.merged_events_count} 个事件`)
+    }
+
+    const resolutionSummary = resolutionParts.length > 0
+      ? resolutionParts.join('；')
+      : '无冲突，全部正常导入'
+
     for (const fp of preview.files) {
       if (fp.is_duplicate) continue
       const batch: ImportBatch = {
@@ -394,6 +436,9 @@ export const useAppStore = create<AppState>((set, get) => ({
         error_count: fp.error_count,
         errors: fp.errors,
         file_hash: fp.file_hash,
+        conflicts: preview.conflicts.length > 0 ? preview.conflicts : undefined,
+        resolution_summary: resolutionSummary,
+        affected_event_ids: affectedEventIds.length > 0 ? affectedEventIds : undefined,
       }
       newBatches.push(batch)
     }
@@ -442,6 +487,9 @@ export const useAppStore = create<AppState>((set, get) => ({
       batches: newBatches,
       newEvents: Math.max(0, newEventCount),
       totalRecords,
+      conflicts: preview.conflicts,
+      affectedEventIds: affectedEventIds,
+      resolutionSummary,
     }
   },
 
@@ -474,12 +522,81 @@ export const useAppStore = create<AppState>((set, get) => ({
       finalEvidences = regen.evidences
     }
 
+    const replayBatchId = generateId() + '-replay'
+    const modeText: Record<ReplayMode, string> = {
+      overwrite: '覆盖',
+      merge: '合并',
+      skip: '跳过',
+    }
+
+    const affectedEventIds: string[] = []
+    if (mode === 'merge') {
+      for (const oldEv of state.events) {
+        for (const newEv of replay.result.imported_batches.length > 0 ? pkg.events : []) {
+          if (oldEv.device_id === newEv.device_id && oldEv.id === newEv.id) {
+            affectedEventIds.push(oldEv.id)
+            break
+          }
+        }
+      }
+    } else if (mode === 'overwrite') {
+      affectedEventIds.push(...state.events.map(e => e.id))
+    }
+
+    const resolutionParts: string[] = []
+    if (replay.result.skipped_batches > 0) {
+      resolutionParts.push(`${replay.result.skipped_batches} 个重复批次已跳过`)
+    }
+    if (replay.result.skipped_events > 0) {
+      resolutionParts.push(`${replay.result.skipped_events} 个重复事件已跳过`)
+    }
+    if (replay.result.merged_events > 0) {
+      resolutionParts.push(`${replay.result.merged_events} 个事件已合并`)
+    }
+    if (replay.result.overwritten_events > 0) {
+      resolutionParts.push(`${replay.result.overwritten_events} 个事件已覆盖`)
+    }
+    if (replay.result.errors.length > 0) {
+      resolutionParts.push(`${replay.result.errors.length} 条提示信息`)
+    }
+
+    const conflicts: ConflictDetail[] = []
+    for (const batch of pkg.import_batches) {
+      if (state.importBatches.some(b => b.file_hash === batch.file_hash)) {
+        conflicts.push({
+          device_id: '',
+          timestamp: '',
+          existing_source: '已导入批次',
+          new_source: batch.file_name,
+          conflict_type: 'batch_duplicate',
+          description: `批次 ${batch.file_name} 已存在`,
+        })
+      }
+    }
+
+    const replayBatch: ImportBatch = {
+      id: replayBatchId,
+      file_type: 'sensor',
+      file_name: `回放-${modeText[mode]}-${new Date().toLocaleString('zh-CN')}`,
+      import_time: new Date().toISOString(),
+      record_count: replay.result.imported_batches.reduce((s, b) => s + b.record_count, 0),
+      error_count: replay.result.errors.length,
+      errors: replay.result.errors.map((msg, i) => ({ row: 0, field: 'replay', value: '', message: msg })),
+      file_hash: `replay-${mode}-${pkg.exported_at}`,
+      conflicts: conflicts.length > 0 ? conflicts : undefined,
+      replay_mode: mode,
+      resolution_summary: resolutionParts.length > 0 ? resolutionParts.join('；') : `${modeText[mode]}回放成功，无冲突`,
+      affected_event_ids: affectedEventIds.length > 0 ? affectedEventIds : undefined,
+    }
+
+    const newBatches = [...replay.batches, replayBatch]
+
     set({
       threshold: finalThreshold,
       sensorRecords: replay.sensorRecords,
       manualNotes: replay.manualNotes,
       alarmRecords: replay.alarmRecords,
-      importBatches: replay.batches,
+      importBatches: newBatches,
       events: finalEvents,
       evidences: finalEvidences,
     })
@@ -495,17 +612,16 @@ export const useAppStore = create<AppState>((set, get) => ({
       importBatches: newState.importBatches,
     })
 
-    const modeText: Record<ReplayMode, string> = {
-      overwrite: '覆盖',
-      merge: '合并',
-      skip: '跳过',
-    }
     get().addToast(
       replay.result.errors.length > 0 ? 'warning' : 'success',
       `场景包回放(${modeText[mode]})完成: ${replay.result.imported_batches.length} 批次导入, ${replay.result.errors.length} 条提示`
     )
 
-    return replay.result
+    return {
+      ...replay.result,
+      replay_batch: replayBatch,
+      resolution_summary: replayBatch.resolution_summary,
+    }
   },
 
   selectEvent: (eventId) => set({ selectedEventId: eventId }),

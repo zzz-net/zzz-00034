@@ -10,10 +10,15 @@ import {
   XCircle,
   CheckCircle2,
   Package,
+  AlertTriangle,
+  ArrowLeftRight,
+  RotateCcw,
+  SkipForward,
+  Link,
 } from 'lucide-react'
 import { Modal } from '../common/Modal'
 import { useAppStore } from '../../store/useAppStore'
-import { FileType } from '../../types'
+import { FileType, ReplayMode } from '../../types'
 
 interface ImportHistoryPanelProps {
   isOpen: boolean
@@ -32,6 +37,12 @@ const fileTypeIcons: Record<FileType, typeof FileSpreadsheet> = {
   alarm: AlertCircle,
 }
 
+const replayModeLabels: Record<ReplayMode, { label: string; icon: typeof RotateCcw; color: string }> = {
+  overwrite: { label: '覆盖', icon: RotateCcw, color: 'red' },
+  merge: { label: '合并', icon: ArrowLeftRight, color: 'sky' },
+  skip: { label: '跳过', icon: SkipForward, color: 'slate' },
+}
+
 export function ImportHistoryPanel({ isOpen, onClose }: ImportHistoryPanelProps) {
   const { importBatches } = useAppStore()
   const [expandedId, setExpandedId] = useState<string | null>(null)
@@ -42,11 +53,12 @@ export function ImportHistoryPanel({ isOpen, onClose }: ImportHistoryPanelProps)
 
   const totalRecords = importBatches.reduce((s, b) => s + b.record_count, 0)
   const totalErrors = importBatches.reduce((s, b) => s + b.error_count, 0)
+  const totalConflicts = importBatches.reduce((s, b) => s + (b.conflicts?.length || 0), 0)
 
   return (
     <Modal isOpen={isOpen} onClose={onClose} title="导入历史" size="xl">
       <div className="p-6">
-        <div className="grid grid-cols-3 gap-3 mb-6">
+        <div className="grid grid-cols-4 gap-3 mb-6">
           <div className="bg-sky-50 rounded-xl p-4 text-center">
             <div className="flex items-center justify-center gap-2 mb-1">
               <Package className="w-4 h-4 text-sky-600" />
@@ -67,6 +79,13 @@ export function ImportHistoryPanel({ isOpen, onClose }: ImportHistoryPanelProps)
               <p className="text-2xl font-bold text-amber-700">{totalErrors}</p>
             </div>
             <p className="text-xs text-amber-600">错误行</p>
+          </div>
+          <div className="bg-orange-50 rounded-xl p-4 text-center">
+            <div className="flex items-center justify-center gap-2 mb-1">
+              <AlertTriangle className="w-4 h-4 text-orange-600" />
+              <p className="text-2xl font-bold text-orange-700">{totalConflicts}</p>
+            </div>
+            <p className="text-xs text-orange-600">冲突</p>
           </div>
         </div>
 
@@ -116,6 +135,29 @@ export function ImportHistoryPanel({ isOpen, onClose }: ImportHistoryPanelProps)
                           <p className="text-xs text-amber-600">{batch.error_count} 错误</p>
                         )}
                       </div>
+                      <div className="flex flex-col items-end gap-1">
+                        {batch.replay_mode && (() => {
+                          const modeInfo = replayModeLabels[batch.replay_mode!]
+                          const ModeIcon = modeInfo.icon
+                          const modeColorMap: Record<string, string> = {
+                            red: 'bg-red-100 text-red-700',
+                            sky: 'bg-sky-100 text-sky-700',
+                            slate: 'bg-slate-200 text-slate-700',
+                          }
+                          return (
+                            <span className={`inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium ${modeColorMap[modeInfo.color]}`}>
+                              <ModeIcon className="w-2.5 h-2.5" />
+                              {modeInfo.label}
+                            </span>
+                          )
+                        })()}
+                        {batch.conflicts && batch.conflicts.length > 0 && (
+                          <span className="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-full text-[10px] font-medium bg-amber-100 text-amber-700">
+                            <AlertTriangle className="w-2.5 h-2.5" />
+                            {batch.conflicts.length} 冲突
+                          </span>
+                        )}
+                      </div>
                       {isExpanded ? (
                         <ChevronUp className="w-4 h-4 text-slate-400" />
                       ) : (
@@ -144,6 +186,68 @@ export function ImportHistoryPanel({ isOpen, onClose }: ImportHistoryPanelProps)
                           <p className="text-slate-700 font-medium">{batch.error_count}</p>
                         </div>
                       </div>
+
+                      {batch.replay_mode && (
+                        <div className="mb-3 flex items-center gap-2">
+                          {(() => {
+                            const modeInfo = replayModeLabels[batch.replay_mode!]
+                            const ModeIcon = modeInfo.icon
+                            const modeColorMap: Record<string, string> = {
+                              red: 'bg-red-100 text-red-700',
+                              sky: 'bg-sky-100 text-sky-700',
+                              slate: 'bg-slate-200 text-slate-700',
+                            }
+                            return (
+                              <span className={`inline-flex items-center gap-1 px-2 py-0.5 rounded-full text-xs font-medium ${modeColorMap[modeInfo.color]}`}>
+                                <ModeIcon className="w-3 h-3" />
+                                {modeInfo.label}回放
+                              </span>
+                            )
+                          })()}
+                        </div>
+                      )}
+
+                      {batch.resolution_summary && (
+                        <div className="mb-3 bg-white border border-slate-200 rounded-lg p-2.5 text-xs">
+                          <p className="text-slate-500 mb-1 font-medium">处理结果</p>
+                          <p className="text-slate-700">{batch.resolution_summary}</p>
+                        </div>
+                      )}
+
+                      {batch.affected_event_ids && batch.affected_event_ids.length > 0 && (
+                        <div className="mb-3 flex items-start gap-2 text-xs">
+                          <Link className="w-3.5 h-3.5 text-sky-500 mt-0.5 shrink-0" />
+                          <div>
+                            <p className="text-slate-500 font-medium">受影响事件</p>
+                            <p className="text-slate-700 mt-0.5">
+                              {batch.affected_event_ids.length} 个事件
+                            </p>
+                          </div>
+                        </div>
+                      )}
+
+                      {batch.conflicts && batch.conflicts.length > 0 && (
+                        <div className="mb-3">
+                          <div className="flex items-center gap-2 mb-2">
+                            <AlertTriangle className="w-3.5 h-3.5 text-amber-500" />
+                            <span className="text-xs font-medium text-slate-600">
+                              冲突明细 ({batch.conflicts.length} 条)
+                            </span>
+                          </div>
+                          <div className="max-h-40 overflow-y-auto border border-amber-200 rounded-lg bg-amber-50 p-2 text-xs">
+                            {batch.conflicts.slice(0, 30).map((c, i) => (
+                              <div key={i} className="py-0.5 text-amber-800">
+                                {c.conflict_type === 'batch_duplicate'
+                                  ? `重复批次: ${c.description}`
+                                  : `${c.device_id} @ ${c.timestamp?.slice(0, 19)}: ${c.description}`}
+                              </div>
+                            ))}
+                            {batch.conflicts.length > 30 && (
+                              <div className="text-amber-600 py-0.5">... 还有 {batch.conflicts.length - 30} 条</div>
+                            )}
+                          </div>
+                        </div>
+                      )}
 
                       {batch.errors.length > 0 && (
                         <div>

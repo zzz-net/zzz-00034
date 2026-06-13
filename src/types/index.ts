@@ -298,10 +298,17 @@ export interface ScenePackage {
   evidences: Evidence[]
   import_sessions: ImportSession[]
   undo_snapshots: UndoSnapshot[]
+  active_rule_scheme?: RuleScheme
+  rule_schemes?: RuleScheme[]
+  recalc_previews?: RecalcPreview[]
+  conflict_choices?: StateConflictChoice[]
+  audit_logs?: AuditLogEntry[]
   _meta?: {
     exported_by_session_id?: string
     total_active_sessions: number
     total_undone_sessions: number
+    rule_scheme_count?: number
+    active_rule_scheme_id?: string
   }
 }
 
@@ -332,4 +339,118 @@ export interface ApplyUndoResult {
   restored_event_count?: number
   restored_batch_count?: number
   mark_undone_session_id?: string
+}
+
+export type EventChangeType = 'new' | 'merged' | 'split' | 'closed' | 'unchanged' | 'modified'
+
+export type StateConflictChoiceType = 'keep_manual' | 'recalculate' | 'skip_batch'
+
+export interface RuleScheme {
+  id: string
+  name: string
+  description?: string
+  threshold: ThresholdConfig
+  is_default: boolean
+  is_active: boolean
+  enabled_at?: string
+  created_at: string
+  updated_at: string
+  created_by?: string
+  version: number
+}
+
+export interface RuleSchemeDiff {
+  scheme_a_id: string
+  scheme_a_name: string
+  scheme_b_id: string
+  scheme_b_name: string
+  differences: Array<{
+    field: keyof ThresholdConfig
+    value_a: number
+    value_b: number
+    change_percent?: number
+  }>
+  summary: string
+}
+
+export interface RecalcEventChange {
+  event_id?: string
+  new_event_id?: string
+  change_type: EventChangeType
+  device_id: string
+  old_start_time?: string
+  old_end_time?: string
+  old_status?: EventStatus
+  old_evidence_count?: number
+  new_start_time?: string
+  new_end_time?: string
+  new_status?: EventStatus
+  new_evidence_count?: number
+  merged_from?: string[]
+  split_into?: string[]
+  description: string
+  has_manual_state: boolean
+}
+
+export interface RecalcPreview {
+  id: string
+  old_scheme_id: string
+  old_scheme_name: string
+  new_scheme_id: string
+  new_scheme_name: string
+  created_at: string
+  old_event_count: number
+  new_event_count: number
+  changes: RecalcEventChange[]
+  new_events: number
+  merged_events: number
+  split_events: number
+  closed_events: number
+  unchanged_events: number
+  modified_events: number
+  events_with_manual_state: number
+  affected_batch_ids: string[]
+  is_applied: boolean
+}
+
+export interface StateConflict {
+  id: string
+  event_id: string
+  event_device_id: string
+  event_start_time: string
+  old_status: EventStatus
+  new_status: EventStatus
+  handler: string
+  batch_id?: string
+  description: string
+}
+
+export interface StateConflictChoice {
+  conflict_id: string
+  event_id: string
+  choice: StateConflictChoiceType
+  batch_id?: string
+  created_at: string
+}
+
+export interface AuditLogEntry {
+  id: string
+  action_type: 'scheme_create' | 'scheme_update' | 'scheme_delete' | 'scheme_switch' | 'scheme_copy' | 'scheme_rename' | 'recalc_start' | 'recalc_apply' | 'recalc_cancel' | 'conflict_resolve'
+  scheme_id?: string
+  scheme_name?: string
+  old_scheme_id?: string
+  new_scheme_id?: string
+  user_note?: string
+  metadata: Record<string, unknown>
+  created_at: string
+  created_by?: string
+}
+
+export interface RuleSchemeStore {
+  schemes: RuleScheme[]
+  active_scheme_id: string
+  recalc_previews: RecalcPreview[]
+  pending_state_conflicts: StateConflict[]
+  conflict_choices: StateConflictChoice[]
+  audit_logs: AuditLogEntry[]
 }

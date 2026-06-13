@@ -19,12 +19,19 @@ import {
   UndoImpactPreview,
   ApplyUndoResult,
   ConflictChoice,
+  RuleScheme,
+  RuleSchemeDiff,
+  RecalcPreview,
+  StateConflict,
+  StateConflictChoice,
+  StateConflictChoiceType,
+  AuditLogEntry,
 } from '../types'
 import { DEFAULT_THRESHOLD, validateThresholdConfig } from '../utils/validator'
 import { detectSensorAnomalies, notesToEvidence, alarmsToEvidence } from '../utils/anomalyDetector'
-import { mergeEvents } from '../utils/eventMerger'
+import { mergeEvents, rebuildEvents } from '../utils/eventMerger'
 import { generateId } from '../utils/csvParser'
-import { replayScenePackage, analyzeReplayConflicts } from '../utils/scenePackage'
+import { replayScenePackage, analyzeReplayConflicts, exportScenePackage, parseScenePackage } from '../utils/scenePackage'
 import {
   createSessionForImport,
   createSessionForReplay,
@@ -33,6 +40,22 @@ import {
   applyUndo,
   findLatestUndoableSession,
 } from '../utils/importSession'
+import {
+  createDefaultScheme,
+  createScheme,
+  copyScheme,
+  updateScheme,
+  renameScheme,
+  deleteScheme,
+  switchScheme,
+  compareSchemes,
+  calculateRecalcPreview,
+  detectStateConflicts,
+  applyConflictChoice,
+  applyRecalcPreview,
+  cancelRecalcPreview,
+  migrateEventStatesWithChoices,
+} from '../utils/ruleScheme'
 
 interface AppState {
   threshold: ThresholdConfig
@@ -47,10 +70,38 @@ interface AppState {
   selectedEventId: string | null
   toasts: ToastMessage[]
 
+  ruleSchemes: RuleScheme[]
+  activeSchemeId: string
+  recalcPreviews: RecalcPreview[]
+  pendingStateConflicts: StateConflict[]
+  conflictChoices: StateConflictChoice[]
+  auditLogs: AuditLogEntry[]
+
   setThreshold: (config: ThresholdConfig) => {
     valid: boolean
     errors: Array<{ field: string; message: string; value: string }>
   }
+
+  createRuleScheme: (name: string, threshold: ThresholdConfig, description?: string) => { success: boolean; scheme?: RuleScheme; error?: string }
+  copyRuleScheme: (sourceId: string, newName: string) => { success: boolean; scheme?: RuleScheme; error?: string }
+  updateRuleScheme: (schemeId: string, updates: Partial<RuleScheme>) => { success: boolean; scheme?: RuleScheme; error?: string }
+  renameRuleScheme: (schemeId: string, newName: string) => { success: boolean; scheme?: RuleScheme; error?: string }
+  deleteRuleScheme: (schemeId: string) => { success: boolean; error?: string }
+  compareRuleSchemes: (schemeIdA: string, schemeIdB: string) => RuleSchemeDiff | null
+  switchRuleScheme: (schemeId: string, conflictChoices?: StateConflictChoice[], skipRecalc?: boolean) => {
+    success: boolean
+    error?: string
+    preview?: RecalcPreview
+    conflicts?: StateConflict[]
+  }
+
+  calculateRecalcPreview: (newSchemeId: string) => RecalcPreview | null
+  detectStateConflictsForPreview: (previewId: string) => StateConflict[]
+  resolveStateConflict: (conflictId: string, choice: StateConflictChoiceType, batchId?: string) => void
+  applyRecalcPreview: (previewId: string, conflictChoices?: StateConflictChoice[]) => { success: boolean; error?: string }
+  cancelRecalcPreview: (previewId: string) => void
+
+  addAuditLog: (log: AuditLogEntry) => void
   addSensorRecords: (
     records: SensorRecord[],
     batchId: string,
@@ -116,6 +167,20 @@ interface PersistedData {
   importBatches: ImportBatch[]
   importSessions: ImportSession[]
   undoSnapshots: UndoSnapshot[]
+  ruleSchemes: RuleScheme[]
+  activeSchemeId: string
+  recalcPreviews: RecalcPreview[]
+  pendingStateConflicts: StateConflict[]
+  conflictChoices: StateConflictChoice[]
+  auditLogs: AuditLogEntry[]
+}
+
+function initDefaultScheme(): { schemes: RuleScheme[]; activeId: string } {
+  const defaultScheme = createDefaultScheme()
+  return {
+    schemes: [defaultScheme],
+    activeId: defaultScheme.id,
+  }
 }
 
 function loadFromStorage(): Partial<PersistedData> {
@@ -132,6 +197,7 @@ function loadFromStorage(): Partial<PersistedData> {
 
 function saveToStorage(state: Partial<PersistedData>) {
   try {
+    const defaultInit = initDefaultScheme()
     const data: PersistedData = {
       threshold: state.threshold || DEFAULT_THRESHOLD,
       sensorRecords: state.sensorRecords || [],
@@ -142,6 +208,12 @@ function saveToStorage(state: Partial<PersistedData>) {
       importBatches: state.importBatches || [],
       importSessions: state.importSessions || [],
       undoSnapshots: state.undoSnapshots || [],
+      ruleSchemes: state.ruleSchemes || defaultInit.schemes,
+      activeSchemeId: state.activeSchemeId || defaultInit.activeId,
+      recalcPreviews: state.recalcPreviews || [],
+      pendingStateConflicts: state.pendingStateConflicts || [],
+      conflictChoices: state.conflictChoices || [],
+      auditLogs: state.auditLogs || [],
     }
     localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
   } catch (e) {
@@ -246,11 +318,42 @@ function saveAllState(get: () => AppState) {
     importBatches: s.importBatches,
     importSessions: s.importSessions,
     undoSnapshots: s.undoSnapshots,
+    ruleSchemes: s.ruleSchemes,
+    activeSchemeId: s.activeSchemeId,
+    recalcPreviews: s.recalcPreviews,
+    pendingStateConflicts: s.pendingStateConflicts,
+    conflictChoices: s.conflictChoices,
+    auditLogs: s.auditLogs,
   })
 }
 
+function getInitialRuleSchemeState(): {
+  ruleSchemes: RuleScheme[]
+  activeSchemeId: string
+  threshold: ThresholdConfig
+} {
+  if (persisted.ruleSchemes && persisted.ruleSchemes.length > 0 && persisted.activeSchemeId) {
+    const activeScheme = persisted.ruleSchemes.find(s => s.id === persisted.activeSchemeId)
+    if (activeScheme) {
+      return {
+        ruleSchemes: persisted.ruleSchemes,
+        activeSchemeId: persisted.activeSchemeId,
+        threshold: activeScheme.threshold,
+      }
+    }
+  }
+  const defaultInit = initDefaultScheme()
+  return {
+    ruleSchemes: defaultInit.schemes,
+    activeSchemeId: defaultInit.activeId,
+    threshold: defaultInit.schemes[0].threshold,
+  }
+}
+
+const initialSchemeState = getInitialRuleSchemeState()
+
 export const useAppStore = create<AppState>((set, get) => ({
-  threshold: persisted.threshold || DEFAULT_THRESHOLD,
+  threshold: initialSchemeState.threshold,
   sensorRecords: persisted.sensorRecords || [],
   manualNotes: persisted.manualNotes || [],
   alarmRecords: persisted.alarmRecords || [],
@@ -259,6 +362,12 @@ export const useAppStore = create<AppState>((set, get) => ({
   importBatches: persisted.importBatches || [],
   importSessions: persisted.importSessions || [],
   undoSnapshots: persisted.undoSnapshots || [],
+  ruleSchemes: initialSchemeState.ruleSchemes,
+  activeSchemeId: initialSchemeState.activeSchemeId,
+  recalcPreviews: persisted.recalcPreviews || [],
+  pendingStateConflicts: persisted.pendingStateConflicts || [],
+  conflictChoices: persisted.conflictChoices || [],
+  auditLogs: persisted.auditLogs || [],
   selectedEventId: null,
   toasts: [],
 
@@ -882,6 +991,363 @@ export const useAppStore = create<AppState>((set, get) => ({
     get().addToast('success', '事件已关闭')
   },
 
+  addAuditLog: (log) => {
+    set((state) => ({ auditLogs: [...state.auditLogs, log] }))
+    saveAllState(get)
+  },
+
+  createRuleScheme: (name, threshold, description) => {
+    const state = get()
+    try {
+      const { scheme, auditLog } = createScheme(name, threshold, { description })
+      set({
+        ruleSchemes: [...state.ruleSchemes, scheme],
+        auditLogs: [...state.auditLogs, auditLog],
+      })
+      saveAllState(get)
+      get().addToast('success', `已创建规则方案「${name}」`)
+      return { success: true, scheme }
+    } catch (e) {
+      const error = e instanceof Error ? e.message : '创建失败'
+      get().addToast('error', `创建方案失败: ${error}`)
+      return { success: false, error }
+    }
+  },
+
+  copyRuleScheme: (sourceId, newName) => {
+    const state = get()
+    const sourceScheme = state.ruleSchemes.find(s => s.id === sourceId)
+    if (!sourceScheme) {
+      get().addToast('error', '源方案不存在')
+      return { success: false, error: '源方案不存在' }
+    }
+    try {
+      const { scheme, auditLog } = copyScheme(sourceScheme, newName)
+      set({
+        ruleSchemes: [...state.ruleSchemes, scheme],
+        auditLogs: [...state.auditLogs, auditLog],
+      })
+      saveAllState(get)
+      get().addToast('success', `已复制方案「${sourceScheme.name}」为「${newName}」`)
+      return { success: true, scheme }
+    } catch (e) {
+      const error = e instanceof Error ? e.message : '复制失败'
+      get().addToast('error', `复制方案失败: ${error}`)
+      return { success: false, error }
+    }
+  },
+
+  updateRuleScheme: (schemeId, updates) => {
+    const state = get()
+    const scheme = state.ruleSchemes.find(s => s.id === schemeId)
+    if (!scheme) {
+      get().addToast('error', '方案不存在')
+      return { success: false, error: '方案不存在' }
+    }
+    if (scheme.is_default && updates.threshold) {
+      get().addToast('error', '不能修改默认方案的阈值')
+      return { success: false, error: '不能修改默认方案的阈值' }
+    }
+    try {
+      if (updates.threshold) {
+        const validation = validateThresholdConfig(updates.threshold)
+        if (!validation.valid) {
+          return { success: false, error: validation.errors.map(e => e.message).join('; ') }
+        }
+      }
+      const { scheme: updated, auditLog } = updateScheme(scheme, updates)
+      const newSchemes = state.ruleSchemes.map(s => s.id === schemeId ? updated : s)
+      set({
+        ruleSchemes: newSchemes,
+        auditLogs: [...state.auditLogs, auditLog],
+      })
+      if (scheme.is_active && updates.threshold) {
+        const result = regenerateAll(
+          state.sensorRecords,
+          state.manualNotes,
+          state.alarmRecords,
+          updates.threshold,
+          state.events
+        )
+        set({
+          threshold: updates.threshold,
+          events: result.events,
+          evidences: result.evidences,
+        })
+      }
+      saveAllState(get)
+      get().addToast('success', `方案「${updated.name}」已更新`)
+      return { success: true, scheme: updated }
+    } catch (e) {
+      const error = e instanceof Error ? e.message : '更新失败'
+      get().addToast('error', `更新方案失败: ${error}`)
+      return { success: false, error }
+    }
+  },
+
+  renameRuleScheme: (schemeId, newName) => {
+    const state = get()
+    const scheme = state.ruleSchemes.find(s => s.id === schemeId)
+    if (!scheme) {
+      get().addToast('error', '方案不存在')
+      return { success: false, error: '方案不存在' }
+    }
+    if (scheme.is_default) {
+      get().addToast('error', '不能重命名默认方案')
+      return { success: false, error: '不能重命名默认方案' }
+    }
+    try {
+      const { scheme: renamed, auditLog } = renameScheme(scheme, newName)
+      const newSchemes = state.ruleSchemes.map(s => s.id === schemeId ? renamed : s)
+      set({
+        ruleSchemes: newSchemes,
+        auditLogs: [...state.auditLogs, auditLog],
+      })
+      saveAllState(get)
+      get().addToast('success', `方案已重命名为「${newName}」`)
+      return { success: true, scheme: renamed }
+    } catch (e) {
+      const error = e instanceof Error ? e.message : '重命名失败'
+      get().addToast('error', `重命名方案失败: ${error}`)
+      return { success: false, error }
+    }
+  },
+
+  deleteRuleScheme: (schemeId) => {
+    const state = get()
+    const result = deleteScheme(state.ruleSchemes, schemeId)
+    if (result.error) {
+      get().addToast('error', `删除方案失败: ${result.error}`)
+      return { success: false, error: result.error }
+    }
+    set({
+      ruleSchemes: result.schemes,
+      auditLogs: [...state.auditLogs, result.auditLog],
+    })
+    saveAllState(get)
+    get().addToast('success', '方案已删除')
+    return { success: true }
+  },
+
+  compareRuleSchemes: (schemeIdA, schemeIdB) => {
+    const state = get()
+    const schemeA = state.ruleSchemes.find(s => s.id === schemeIdA)
+    const schemeB = state.ruleSchemes.find(s => s.id === schemeIdB)
+    if (!schemeA || !schemeB) return null
+    return compareSchemes(schemeA, schemeB)
+  },
+
+  switchRuleScheme: (schemeId, conflictChoices = [], skipRecalc = false) => {
+    const state = get()
+    const newScheme = state.ruleSchemes.find(s => s.id === schemeId)
+    if (!newScheme) {
+      return { success: false, error: '目标方案不存在' }
+    }
+    if (newScheme.is_active) {
+      return { success: false, error: '该方案已经是激活状态' }
+    }
+
+    const oldScheme = state.ruleSchemes.find(s => s.is_active)
+    if (!oldScheme) {
+      return { success: false, error: '当前无激活方案' }
+    }
+
+    if (skipRecalc) {
+      const switchResult = switchScheme(state.ruleSchemes, schemeId)
+      if (switchResult.error) {
+        return { success: false, error: switchResult.error }
+      }
+
+      const regenResult = regenerateAll(
+        state.sensorRecords,
+        state.manualNotes,
+        state.alarmRecords,
+        newScheme.threshold,
+        state.events
+      )
+
+      set({
+        ruleSchemes: switchResult.schemes,
+        activeSchemeId: schemeId,
+        threshold: newScheme.threshold,
+        events: regenResult.events,
+        evidences: regenResult.evidences,
+        auditLogs: [...state.auditLogs, switchResult.auditLog],
+      })
+      saveAllState(get)
+      get().addToast('success', `已切换到方案「${newScheme.name}」`)
+      return { success: true }
+    }
+
+    const { preview, auditLog: previewAuditLog } = calculateRecalcPreview(
+      oldScheme,
+      newScheme,
+      state.sensorRecords,
+      state.manualNotes,
+      state.alarmRecords,
+      state.events,
+      state.importBatches
+    )
+
+    const conflicts = detectStateConflicts(preview, state.events)
+
+    const switchResult = switchScheme(state.ruleSchemes, schemeId)
+    if (switchResult.error) {
+      return { success: false, error: switchResult.error }
+    }
+
+    const applyResult = applyRecalcPreview(
+      preview,
+      conflictChoices,
+      state.events,
+      state.sensorRecords,
+      state.manualNotes,
+      state.alarmRecords,
+      newScheme
+    )
+
+    const finalEvents = migrateEventStatesWithChoices(
+      state.events,
+      applyResult.events,
+      conflictChoices
+    )
+
+    set({
+      ruleSchemes: switchResult.schemes,
+      activeSchemeId: schemeId,
+      threshold: newScheme.threshold,
+      events: finalEvents,
+      evidences: applyResult.evidences,
+      recalcPreviews: [...state.recalcPreviews, applyResult.appliedPreview],
+      pendingStateConflicts: conflicts,
+      conflictChoices: [...state.conflictChoices, ...conflictChoices],
+      auditLogs: [
+        ...state.auditLogs,
+        previewAuditLog,
+        switchResult.auditLog,
+        applyResult.auditLog,
+      ],
+    })
+    saveAllState(get)
+    get().addToast('success', `已切换到方案「${newScheme.name}」，共 ${finalEvents.length} 个事件`)
+
+    return { success: true, preview, conflicts }
+  },
+
+  calculateRecalcPreview: (newSchemeId) => {
+    const state = get()
+    const newScheme = state.ruleSchemes.find(s => s.id === newSchemeId)
+    const oldScheme = state.ruleSchemes.find(s => s.is_active)
+    if (!newScheme || !oldScheme) return null
+
+    const { preview, auditLog } = calculateRecalcPreview(
+      oldScheme,
+      newScheme,
+      state.sensorRecords,
+      state.manualNotes,
+      state.alarmRecords,
+      state.events,
+      state.importBatches
+    )
+
+    set({
+      recalcPreviews: [...state.recalcPreviews, preview],
+      auditLogs: [...state.auditLogs, auditLog],
+    })
+    saveAllState(get)
+
+    return preview
+  },
+
+  detectStateConflictsForPreview: (previewId) => {
+    const state = get()
+    const preview = state.recalcPreviews.find(p => p.id === previewId)
+    if (!preview) return []
+    const conflicts = detectStateConflicts(preview, state.events)
+    set({ pendingStateConflicts: conflicts })
+    saveAllState(get)
+    return conflicts
+  },
+
+  resolveStateConflict: (conflictId, choice, batchId) => {
+    const state = get()
+    const conflict = state.pendingStateConflicts.find(c => c.id === conflictId)
+    if (!conflict) return
+
+    const { choice: choiceRecord, auditLog } = applyConflictChoice(conflict, choice, batchId)
+
+    set({
+      conflictChoices: [...state.conflictChoices, choiceRecord],
+      auditLogs: [...state.auditLogs, auditLog],
+    })
+    saveAllState(get)
+  },
+
+  applyRecalcPreview: (previewId, conflictChoices = []) => {
+    const state = get()
+    const preview = state.recalcPreviews.find(p => p.id === previewId)
+    if (!preview) {
+      return { success: false, error: '预览不存在' }
+    }
+    if (preview.is_applied) {
+      return { success: false, error: '预览已应用' }
+    }
+
+    const newScheme = state.ruleSchemes.find(s => s.id === preview.new_scheme_id)
+    if (!newScheme) {
+      return { success: false, error: '目标方案不存在' }
+    }
+
+    const applyResult = applyRecalcPreview(
+      preview,
+      conflictChoices,
+      state.events,
+      state.sensorRecords,
+      state.manualNotes,
+      state.alarmRecords,
+      newScheme
+    )
+
+    const finalEvents = migrateEventStatesWithChoices(
+      state.events,
+      applyResult.events,
+      conflictChoices
+    )
+
+    const updatedPreviews = state.recalcPreviews.map(p =>
+      p.id === previewId ? applyResult.appliedPreview : p
+    )
+
+    const switchResult = switchScheme(state.ruleSchemes, newScheme.id)
+
+    set({
+      ruleSchemes: switchResult.schemes,
+      activeSchemeId: newScheme.id,
+      threshold: newScheme.threshold,
+      events: finalEvents,
+      evidences: applyResult.evidences,
+      recalcPreviews: updatedPreviews,
+      conflictChoices: [...state.conflictChoices, ...conflictChoices],
+      auditLogs: [...state.auditLogs, applyResult.auditLog, switchResult.auditLog],
+    })
+    saveAllState(get)
+
+    get().addToast('success', `已应用回算结果，共 ${finalEvents.length} 个事件`)
+    return { success: true }
+  },
+
+  cancelRecalcPreview: (previewId) => {
+    const state = get()
+    const auditLog = cancelRecalcPreview(previewId)
+    set({
+      recalcPreviews: state.recalcPreviews.filter(p => p.id !== previewId),
+      pendingStateConflicts: [],
+      auditLogs: [...state.auditLogs, auditLog],
+    })
+    saveAllState(get)
+    get().addToast('info', '已取消回算预览')
+  },
+
   addToast: (type, message) => {
     const id = generateId()
     const toast: ToastMessage = { id, type, message }
@@ -915,6 +1381,7 @@ export const useAppStore = create<AppState>((set, get) => ({
   },
 
   clearAllData: () => {
+    const defaultInit = initDefaultScheme()
     set({
       sensorRecords: [],
       manualNotes: [],
@@ -924,10 +1391,17 @@ export const useAppStore = create<AppState>((set, get) => ({
       importBatches: [],
       importSessions: [],
       undoSnapshots: [],
+      ruleSchemes: defaultInit.schemes,
+      activeSchemeId: defaultInit.activeId,
+      threshold: defaultInit.schemes[0].threshold,
+      recalcPreviews: [],
+      pendingStateConflicts: [],
+      conflictChoices: [],
+      auditLogs: [],
       selectedEventId: null,
     })
     saveToStorage({
-      threshold: get().threshold,
+      threshold: defaultInit.schemes[0].threshold,
       sensorRecords: [],
       manualNotes: [],
       alarmRecords: [],
@@ -936,6 +1410,12 @@ export const useAppStore = create<AppState>((set, get) => ({
       importBatches: [],
       importSessions: [],
       undoSnapshots: [],
+      ruleSchemes: defaultInit.schemes,
+      activeSchemeId: defaultInit.activeId,
+      recalcPreviews: [],
+      pendingStateConflicts: [],
+      conflictChoices: [],
+      auditLogs: [],
     })
     get().addToast('info', '所有数据已清除')
   },

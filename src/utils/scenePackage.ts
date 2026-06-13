@@ -19,6 +19,10 @@ import {
   ReplayConflictAnalysis,
   ConflictChoice,
   ConflictChoiceType,
+  RuleScheme,
+  RecalcPreview,
+  StateConflictChoice,
+  AuditLogEntry,
 } from '../types'
 import { generateId, parseSensorCSV, parseNoteCSV, parseCSV } from './csvParser'
 import { parseAlarmJSON } from './jsonParser'
@@ -285,10 +289,16 @@ export function exportScenePackage(
   evidences: Evidence[],
   importSessions: ImportSession[] = [],
   undoSnapshots: UndoSnapshot[] = [],
-  exportedBySessionId?: string
+  exportedBySessionId?: string,
+  ruleSchemes?: RuleScheme[],
+  activeRuleSchemeId?: string,
+  recalcPreviews?: RecalcPreview[],
+  conflictChoices?: StateConflictChoice[],
+  auditLogs?: AuditLogEntry[]
 ): ScenePackage {
   const activeSessions = importSessions.filter(s => s.undo_status === 'active').length
   const undoneSessions = importSessions.filter(s => s.undo_status === 'undone').length
+  const activeScheme = ruleSchemes?.find(s => s.id === activeRuleSchemeId)
   return {
     version: 1,
     exported_at: new Date().toISOString(),
@@ -310,10 +320,17 @@ export function exportScenePackage(
       full_import_batches: [],
       full_sessions: [],
     })),
+    active_rule_scheme: activeScheme ? { ...activeScheme } : undefined,
+    rule_schemes: ruleSchemes?.map(s => ({ ...s })),
+    recalc_previews: recalcPreviews?.map(p => ({ ...p })),
+    conflict_choices: conflictChoices?.map(c => ({ ...c })),
+    audit_logs: auditLogs?.map(l => ({ ...l })),
     _meta: {
       exported_by_session_id: exportedBySessionId,
       total_active_sessions: activeSessions,
       total_undone_sessions: undoneSessions,
+      rule_scheme_count: ruleSchemes?.length || 0,
+      active_rule_scheme_id: activeRuleSchemeId,
     },
   }
 }
@@ -404,6 +421,18 @@ export function parseScenePackage(content: string): ParseScenePackageResult {
   if (!Array.isArray(obj.undo_snapshots)) {
     obj.undo_snapshots = []
   }
+  if (!Array.isArray(obj.rule_schemes)) {
+    obj.rule_schemes = []
+  }
+  if (!Array.isArray(obj.recalc_previews)) {
+    obj.recalc_previews = []
+  }
+  if (!Array.isArray(obj.conflict_choices)) {
+    obj.conflict_choices = []
+  }
+  if (!Array.isArray(obj.audit_logs)) {
+    obj.audit_logs = []
+  }
 
   if (errors.length > 0) {
     return { valid: false, data: null, errors }
@@ -412,6 +441,10 @@ export function parseScenePackage(content: string): ParseScenePackageResult {
   const data = raw as ScenePackage
   if (!data.import_sessions) data.import_sessions = []
   if (!data.undo_snapshots) data.undo_snapshots = []
+  if (!data.rule_schemes) data.rule_schemes = []
+  if (!data.recalc_previews) data.recalc_previews = []
+  if (!data.conflict_choices) data.conflict_choices = []
+  if (!data.audit_logs) data.audit_logs = []
 
   return {
     valid: true,
@@ -428,7 +461,11 @@ export function replayScenePackage(
   currentAlarmRecords: AlarmRecord[],
   currentBatches: ImportBatch[],
   currentEvents: Event[],
-  currentEvidences: Evidence[]
+  currentEvidences: Evidence[],
+  currentRuleSchemes: RuleScheme[] = [],
+  currentRecalcPreviews: RecalcPreview[] = [],
+  currentConflictChoices: StateConflictChoice[] = [],
+  currentAuditLogs: AuditLogEntry[] = []
 ): {
   result: ScenePackageReplayResult
   sensorRecords: SensorRecord[]
@@ -438,6 +475,11 @@ export function replayScenePackage(
   events: Event[]
   evidences: Evidence[]
   threshold: ThresholdConfig
+  ruleSchemes: RuleScheme[]
+  activeRuleSchemeId: string | null
+  recalcPreviews: RecalcPreview[]
+  conflictChoices: StateConflictChoice[]
+  auditLogs: AuditLogEntry[]
 } {
   const errors: string[] = []
   let skippedBatches = 0
@@ -445,6 +487,30 @@ export function replayScenePackage(
   let mergedEvents = 0
   let overwrittenEvents = 0
   const importedBatches: ImportBatch[] = []
+
+  const pkgRuleSchemes = pkg.rule_schemes || []
+  const pkgActiveScheme = pkg.active_rule_scheme
+  const pkgRecalcPreviews = pkg.recalc_previews || []
+  const pkgConflictChoices = pkg.conflict_choices || []
+  const pkgAuditLogs = pkg.audit_logs || []
+
+  let mergedRuleSchemes: RuleScheme[] = []
+  let activeSchemeId: string | null = null
+
+  if (mode === 'overwrite') {
+    mergedRuleSchemes = pkgRuleSchemes
+    activeSchemeId = pkgActiveScheme?.id || null
+  } else {
+    const existingSchemeIds = new Set(currentRuleSchemes.map(s => s.id))
+    mergedRuleSchemes = [...currentRuleSchemes]
+    for (const scheme of pkgRuleSchemes) {
+      if (!existingSchemeIds.has(scheme.id)) {
+        mergedRuleSchemes.push(scheme)
+      }
+    }
+    const currentActive = currentRuleSchemes.find(s => s.is_active)
+    activeSchemeId = currentActive?.id || null
+  }
 
   if (mode === 'overwrite') {
     return {
@@ -465,6 +531,11 @@ export function replayScenePackage(
       events: [...pkg.events],
       evidences: [...pkg.evidences],
       threshold: { ...pkg.threshold },
+      ruleSchemes: mergedRuleSchemes,
+      activeRuleSchemeId: activeSchemeId,
+      recalcPreviews: [...pkgRecalcPreviews],
+      conflictChoices: [...pkgConflictChoices],
+      auditLogs: [...pkgAuditLogs],
     }
   }
 
@@ -550,6 +621,31 @@ export function replayScenePackage(
 
   const threshold = validateThresholdConfig(pkg.threshold).valid ? pkg.threshold : { ...DEFAULT_THRESHOLD }
 
+  const mergedRecalcPreviews = [...currentRecalcPreviews]
+  const existingPreviewIds = new Set(currentRecalcPreviews.map(p => p.id))
+  for (const p of pkgRecalcPreviews) {
+    if (!existingPreviewIds.has(p.id)) {
+      mergedRecalcPreviews.push(p)
+    }
+  }
+
+  const mergedConflictChoices = [...currentConflictChoices]
+  const existingChoiceKeys = new Set(currentConflictChoices.map(c => `${c.conflict_id}_${c.choice}`))
+  for (const c of pkgConflictChoices) {
+    const key = `${c.conflict_id}_${c.choice}`
+    if (!existingChoiceKeys.has(key)) {
+      mergedConflictChoices.push(c)
+    }
+  }
+
+  const mergedAuditLogs = [...currentAuditLogs]
+  const existingAuditIds = new Set(currentAuditLogs.map(l => l.id))
+  for (const l of pkgAuditLogs) {
+    if (!existingAuditIds.has(l.id)) {
+      mergedAuditLogs.push(l)
+    }
+  }
+
   return {
     result: {
       success: true,
@@ -568,6 +664,11 @@ export function replayScenePackage(
     events,
     evidences,
     threshold: validateThresholdConfig(pkg.threshold).valid ? pkg.threshold : { ...DEFAULT_THRESHOLD },
+    ruleSchemes: mergedRuleSchemes,
+    activeRuleSchemeId: activeSchemeId,
+    recalcPreviews: mergedRecalcPreviews,
+    conflictChoices: mergedConflictChoices,
+    auditLogs: mergedAuditLogs,
   }
 }
 

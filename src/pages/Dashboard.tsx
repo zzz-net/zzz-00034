@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Upload, AlertTriangle, CheckCircle, XCircle, Clock, Cpu, Trash2, History, RotateCcw, Package, ChevronDown } from 'lucide-react'
 import { StatsCard } from '../components/dashboard/StatsCard'
 import { ThresholdPanel } from '../components/dashboard/ThresholdPanel'
+import { RuleSchemeManager } from '../components/dashboard/RuleSchemeManager'
 import { EventList } from '../components/dashboard/EventList'
 import { EventDetail } from '../components/dashboard/EventDetail'
 import { ImportModal } from '../components/import/ImportModal'
@@ -227,6 +228,7 @@ export default function Dashboard() {
         
         <div className="grid grid-cols-1 lg:grid-cols-12 gap-6" style={{ height: 'calc(100vh - 240px)' }}>
           <div className="lg:col-span-3 space-y-6 overflow-y-auto">
+            <RuleSchemeManager />
             <ThresholdPanel />
             
             <div className="bg-white rounded-xl border border-slate-200 p-5 shadow-sm">
